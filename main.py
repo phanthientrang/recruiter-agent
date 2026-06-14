@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import os
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional, TypedDict
@@ -84,15 +85,39 @@ def _get_headers(ws) -> list[str]:
 # ---------------------------------------------------------------------------
 # Skill 2 — CV text extraction
 # ---------------------------------------------------------------------------
+def _resolve_path(file_path: str) -> str:
+    """Resolve the actual file path, handling Unicode normalization differences
+    (NFC vs NFD) that occur with Vietnamese and other accented filenames on Windows."""
+    file_path = os.path.normpath(file_path)
+    if os.path.exists(file_path):
+        return file_path
+    # Try NFC (Windows filesystem norm)
+    nfc = unicodedata.normalize("NFC", file_path)
+    if os.path.exists(nfc):
+        return nfc
+    # Scan parent directory for a name that matches after NFC normalization
+    parent, name = os.path.dirname(file_path), os.path.basename(file_path)
+    name_nfc = unicodedata.normalize("NFC", name).lower()
+    if os.path.isdir(parent):
+        for fname in os.listdir(parent):
+            if unicodedata.normalize("NFC", fname).lower() == name_nfc:
+                return os.path.join(parent, fname)
+    return file_path  # return as-is; caller will get a clear error
+
+
 def _extract_pdf_text(file_path: str) -> str:
     import pypdf
-    reader = pypdf.PdfReader(file_path)
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
+    # Open via Python's built-in open() so Windows Unicode API handles the path,
+    # then pass the file object — avoids encoding issues inside pypdf itself.
+    with open(file_path, "rb") as f:
+        reader = pypdf.PdfReader(f)
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
 def _extract_docx_text(file_path: str) -> str:
     from docx import Document
-    doc = Document(file_path)
+    with open(file_path, "rb") as f:
+        doc = Document(f)
     return "\n".join(p.text for p in doc.paragraphs)
 
 
@@ -260,6 +285,7 @@ def _build_row_data(cv: _CVFields, folder: dict, file_path: str) -> dict:
 
 
 def _process_cv(file_path: str) -> dict:
+    file_path = _resolve_path(file_path)
     result: dict = {"file": os.path.basename(file_path), "status": None, "messages": []}
 
     try:
