@@ -200,6 +200,37 @@ def _check_duplicate(email: str, request_code: str) -> dict | None:
     return None
 
 
+def _check_cross_role_duplicate(email: str, exclude_request_code: str) -> list[dict]:
+    """Return rows where the same email appears for a different job code under this TA (personal DB)."""
+    if not email or not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
+        return []
+    wb = _open_wb(EXCEL_PATH, read_only=True)
+    if "Database" not in wb.sheetnames:
+        wb.close()
+        return []
+    ws = wb["Database"]
+    headers = None
+    found = []
+    for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        if headers is None:
+            headers = [str(c).strip() if c is not None else "" for c in row]
+            continue
+        row_dict = dict(zip(headers, row))
+        row_email = str(row_dict.get("Email") or "").strip().lower()
+        row_code = str(row_dict.get("Request code") or "").strip()
+        row_ta = str(row_dict.get("TA Incharge") or "").strip().lower()
+        if (row_email == email.strip().lower()
+                and row_code != exclude_request_code.strip()
+                and row_ta == (TA_INCHARGE or "").lower().strip()):
+            found.append({
+                "row_number": row_idx,
+                "candidate_name": row_dict.get("Candidate name"),
+                "request_code": row_code,
+            })
+    wb.close()
+    return found
+
+
 def _add_row(row_data: dict) -> int:
     if not EXCEL_PATH:
         raise ValueError("EXCEL_PATH is not configured in .env")
@@ -214,9 +245,10 @@ def _add_row(row_data: dict) -> int:
         for col, h in enumerate(DB_COLUMNS, 1):
             ws.cell(row=1, column=col, value=h)
         headers = DB_COLUMNS
-    next_row = ws.max_row + 1
+    # Always start from row 3 minimum (row 1 = headers, row 2 = annotation)
+    next_row = max(ws.max_row + 1, 3)
     if "No" in headers:
-        ws.cell(row=next_row, column=headers.index("No") + 1, value=next_row - 1)
+        ws.cell(row=next_row, column=headers.index("No") + 1, value=next_row - 2)
     for col_name, value in row_data.items():
         if col_name == "Profile":
             continue  # handled separately below
@@ -240,8 +272,17 @@ def _overwrite_row(row_number: int, row_data: dict):
     ws = wb["Database"]
     headers = _get_headers(ws)
     for col_name, value in row_data.items():
+        if col_name == "Profile":
+            continue
         if col_name in headers:
             ws.cell(row=row_number, column=headers.index(col_name) + 1, value=value)
+    if "Profile" in headers and row_data.get("Profile"):
+        file_path_val = str(row_data["Profile"])
+        display = str(row_data.get("Candidate name") or os.path.basename(file_path_val))
+        url = "file:///" + file_path_val.replace("\\", "/")
+        cell = ws.cell(row=row_number, column=headers.index("Profile") + 1, value=display)
+        cell.hyperlink = url
+        cell.font = Font(color="0563C1", underline="single")
     wb.save(EXCEL_PATH)
     wb.close()
 
@@ -337,7 +378,26 @@ def _process_cv(file_path: str) -> dict:
             _mark_processed(file_path)
             return result
 
+        cross_role = _check_cross_role_duplicate(cv.email, folder["request_code"])
+        if cross_role:
+            codes = ", ".join(r["request_code"] for r in cross_role)
+            result.update(status="cross_role_duplicate", messages=result["messages"] + [
+                f"⚠ CROSS-ROLE: {cv.candidate_name or 'This candidate'} ({cv.email}) is already "
+                f"in your pipeline for another role ({codes}). "
+                "Use resolve_cross_role to add a new row or skip."
+            ])
+            _alerts.append({
+                **result, "timestamp": datetime.now().isoformat(),
+                "file_path": os.path.normpath(file_path),
+                "cv_fields": cv.model_dump(), "folder_info": folder,
+                "existing_roles": [r["request_code"] for r in cross_role],
+            })
+            _mark_processed(file_path)
+            return result
+
     row_data = _build_row_data(cv, folder, file_path)
+    if not cv.email:
+        row_data["Note"] = "Email missing - please fill in manually"
     if EXCEL_PATH:
         try:
             new_row = _add_row(row_data)
@@ -490,9 +550,9 @@ def _add_team_row(row_data: dict) -> int:
         for col, h in enumerate(DB_COLUMNS, 1):
             ws.cell(row=1, column=col, value=h)
         headers = DB_COLUMNS
-    next_row = ws.max_row + 1
+    next_row = max(ws.max_row + 1, 3)
     if "No" in headers:
-        ws.cell(row=next_row, column=headers.index("No") + 1, value=next_row - 1)
+        ws.cell(row=next_row, column=headers.index("No") + 1, value=next_row - 2)
     for col_name in SYNC_COLUMNS:
         value = row_data.get(col_name)
         if col_name in headers and value is not None:
@@ -568,13 +628,6 @@ def _get_changed_fields(my_row: dict, team_row: dict) -> dict:
     }
 
 
-def _is_conflict(team_row: dict, today: str) -> bool:
-    """Conflict: team DB row was added today by a different TA (two recruiters processed same candidate today)."""
-    team_ta = str(team_row.get("TA Incharge") or "").strip().lower()
-    team_date = str(team_row.get("Entry date") or "").strip()[:10]
-    return team_date == today and team_ta != (TA_INCHARGE or "").lower().strip()
-
-
 def _validate_excel(path: str) -> bool:
     """Return True if the file can be opened as a valid Excel workbook."""
     try:
@@ -610,6 +663,17 @@ def _run_sync() -> dict:
     team_lookup = _read_team_db()
     snapshot = _load_sync_state().get("rows", {})
 
+    # Email-only lookup for cross-TA cross-role detection (Case 4)
+    email_lookup: dict[str, list[dict]] = {}
+    for _k, (_rn, _rd) in team_lookup.items():
+        _em = str(_rd.get("Email") or "").strip().lower()
+        if _em:
+            email_lookup.setdefault(_em, []).append({
+                "request_code": str(_rd.get("Request code") or "").strip(),
+                "team_ta": str(_rd.get("TA Incharge") or "").strip().lower(),
+                "team_ta_display": str(_rd.get("TA Incharge") or ""),
+            })
+
     # Determine which personal rows to sync: added today OR changed since last sync
     to_sync = []
     for row in personal_rows:
@@ -622,55 +686,96 @@ def _run_sync() -> dict:
         elif key in snapshot and _row_changed_vs_snapshot(row, snapshot[key]):
             to_sync.append(row)
 
-    conflicts_to_log: list[dict] = []
+    if not to_sync:
+        _save_sync_state(personal_rows)
+        summary = f"Daily sync {today}: No changes to sync today."
+        _alerts.append({"status": "sync_complete", "messages": [summary],
+                        "timestamp": result["timestamp"], "details": result})
+        return result
 
+    locked = False
     for my_row in to_sync:
+        if locked:
+            break
         key = _row_key(my_row)
         email = str(my_row.get("Email") or "").strip().lower()
         request_code = str(my_row.get("Request code") or "").strip()
         candidate_name = str(my_row.get("Candidate name") or "")
+        serialized_row = {k: str(v) if v is not None else None for k, v in my_row.items()}
         try:
             if key not in team_lookup:
-                _add_team_row(my_row)
-                # Keep lookup fresh so duplicate my_rows in the same batch don't double-insert
-                team_lookup[key] = (-1, my_row)
-                result["added"] += 1
+                # Case 4: same email + different job code + different TA already in team DB
+                cross_ta = [
+                    e for e in email_lookup.get(email, [])
+                    if e["request_code"] != request_code
+                    and e["team_ta"] != (TA_INCHARGE or "").lower().strip()
+                ] if email else []
+                if cross_ta:
+                    codes = ", ".join(e["request_code"] for e in cross_ta)
+                    tas = ", ".join(sorted(set(e["team_ta_display"] for e in cross_ta)))
+                    _alerts.append({
+                        "status": "sync_cross_ta_pending",
+                        "timestamp": datetime.now().isoformat(),
+                        "email": email,
+                        "request_code": request_code,
+                        "candidate_name": candidate_name,
+                        "team_ta": tas,
+                        "row_data": serialized_row,
+                        "messages": [
+                            f"⚠ Cross-TA: {candidate_name} ({email}) is applying for multiple roles across the team — "
+                            f"{tas} already has this candidate for {codes}. "
+                            "Use resolve_sync_conflict to sync as new row or skip."
+                        ],
+                    })
+                    result["conflicts"] += 1
+                else:
+                    _add_team_row(my_row)
+                    team_lookup[key] = (-1, my_row)
+                    result["added"] += 1
             else:
                 team_row_num, team_row = team_lookup[key]
                 changed = _get_changed_fields(my_row, team_row)
                 if not changed:
                     result["skipped"] += 1
                     continue
-                if _is_conflict(team_row, today):
-                    for field, vals in changed.items():
-                        conflicts_to_log.append({
-                            "timestamp": datetime.now().isoformat(),
-                            "email": email,
-                            "request_code": request_code,
-                            "candidate_name": candidate_name,
-                            "field": field,
-                            "my_value": vals["mine"],
-                            "team_value": vals["theirs"],
-                            "my_ta": TA_INCHARGE,
-                            "team_ta": str(team_row.get("TA Incharge") or ""),
-                        })
+                team_ta = str(team_row.get("TA Incharge") or "").strip().lower()
+                my_ta = (TA_INCHARGE or "").lower().strip()
+                if team_ta != my_ta:
+                    # Case 3: same email + same job code + different TA → pending alert
+                    _alerts.append({
+                        "status": "sync_conflict_pending",
+                        "timestamp": datetime.now().isoformat(),
+                        "email": email,
+                        "request_code": request_code,
+                        "candidate_name": candidate_name,
+                        "team_ta": str(team_row.get("TA Incharge") or ""),
+                        "row_data": serialized_row,
+                        "messages": [
+                            f"⚠ Sync conflict: {candidate_name} ({email}) for {request_code} — "
+                            f"{team_row.get('TA Incharge')} already has this candidate in the team DB. "
+                            "Use resolve_sync_conflict to sync as new row or skip."
+                        ],
+                    })
                     result["conflicts"] += 1
                 else:
                     _update_team_row(team_row_num, changed)
                     result["updated"] += 1
+        except PermissionError:
+            # Case 6: team DB file is open/locked by another user
+            error_msg = "Team database is currently open by another user. Please close it and try again."
+            result["errors"].append(error_msg)
+            _alerts.append({"status": "sync_error", "messages": [error_msg],
+                            "timestamp": datetime.now().isoformat()})
+            locked = True
         except Exception as e:
             result["errors"].append(f"{candidate_name} ({email}): {e}")
-
-    if conflicts_to_log:
-        try:
-            _write_conflict_log(conflicts_to_log)
-        except Exception as e:
-            result["errors"].append(f"Conflict log write failed: {e}")
 
     _save_sync_state(personal_rows)
 
     summary = (f"Daily sync {today}: {result['added']} added, {result['updated']} updated, "
-               f"{result['skipped']} skipped, {result['conflicts']} conflicts.")
+               f"{result['skipped']} skipped, {result['conflicts']} pending conflicts.")
+    if result["errors"]:
+        summary += f" {len(result['errors'])} error(s)."
     _alerts.append({"status": "sync_complete", "messages": [summary],
                     "timestamp": result["timestamp"], "details": result})
     return result
@@ -822,6 +927,74 @@ def resolve_duplicate(email: str, request_code: str, action: str) -> str:
     return "Invalid action. Use 'keep' or 'overwrite'."
 
 
+@tool
+def resolve_cross_role(email: str, new_request_code: str, action: str) -> str:
+    """Resolve a cross-role duplicate: same candidate already in your pipeline for a different role.
+
+    Args:
+        email: The candidate's email address.
+        new_request_code: The new job request code being processed.
+        action: 'add' to add the new row anyway, or 'skip' to not add.
+    """
+    pending = next(
+        (a for a in _alerts
+         if a.get("status") == "cross_role_duplicate"
+         and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
+         and str(a.get("folder_info", {}).get("request_code") or "") == new_request_code.strip()),
+        None,
+    )
+    if not pending:
+        return f"No pending cross-role alert for '{email}' / '{new_request_code}'."
+    name = pending["cv_fields"].get("candidate_name") or "Unknown"
+    if action.lower() == "skip":
+        _alerts.remove(pending)
+        return f"Skipped adding {name} for {new_request_code}. No changes made."
+    if action.lower() == "add":
+        row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_info"], pending["file_path"])
+        try:
+            new_row = _add_row(row_data)
+        except Exception as e:
+            return f"Failed to add row: {e}"
+        _alerts.remove(pending)
+        return f"Added {name} for {new_request_code} at row {new_row}."
+    return "Invalid action. Use 'add' or 'skip'."
+
+
+@tool
+def resolve_sync_conflict(email: str, request_code: str, action: str) -> str:
+    """Resolve a pending sync conflict (different TA already has this candidate in the team database).
+
+    Args:
+        email: The candidate's email address.
+        request_code: The job request code.
+        action: 'skip' to leave the team DB unchanged, or 'add_new' to insert this row as a new entry.
+    """
+    pending = next(
+        (a for a in _alerts
+         if a.get("status") in ("sync_conflict_pending", "sync_cross_ta_pending")
+         and str(a.get("email") or "").lower() == email.strip().lower()
+         and str(a.get("request_code") or "") == request_code.strip()),
+        None,
+    )
+    if not pending:
+        return f"No pending sync conflict for '{email}' / '{request_code}'."
+    candidate_name = pending.get("candidate_name") or "Unknown"
+    if action.lower() == "skip":
+        _alerts.remove(pending)
+        return f"Skipped syncing {candidate_name} ({email}) for {request_code}. Team DB unchanged."
+    if action.lower() == "add_new":
+        row_data = {k: v for k, v in pending["row_data"].items() if v is not None}
+        try:
+            new_row = _add_team_row(row_data)
+        except PermissionError:
+            return "Team database is currently open by another user. Please close it and try again."
+        except Exception as e:
+            return f"Failed to add row: {e}"
+        _alerts.remove(pending)
+        return f"Added {candidate_name} as new row {new_row} in team database for {request_code}."
+    return "Invalid action. Use 'skip' or 'add_new'."
+
+
 # ---------------------------------------------------------------------------
 # LangGraph tools — Skill 3
 # ---------------------------------------------------------------------------
@@ -861,14 +1034,16 @@ SYSTEM_PROMPT = """You are a Recruiter Assistant Agent for VNG recruitment opera
 Skills:
 1. **create_job_folder** — create job folder with standard sub-folders (LinkedIn, VNG Careers, Referral, TA Search, Others)
 2. **process_cv_file** — process a CV file and add candidate to personal database
-3. **get_alerts** — check pending alerts: CV results, duplicates, sync outcomes, errors
+3. **get_alerts** — check pending alerts: CV results, duplicates, sync conflicts, errors
 4. **clear_alerts** — dismiss resolved alerts
-5. **resolve_duplicate** — resolve a duplicate candidate: keep existing row or overwrite
-6. **run_sync_now** — manually trigger personal → team database sync immediately
-7. **get_sync_status** — show last sync time and next scheduled sync
+5. **resolve_duplicate** — same email + same job code: keep existing row or overwrite
+6. **resolve_cross_role** — same email + different job code (your pipeline): add new row or skip
+7. **resolve_sync_conflict** — sync blocked by different TA in team DB: add new row or skip
+8. **run_sync_now** — manually trigger personal → team database sync immediately
+9. **get_sync_status** — show last sync time and next scheduled sync
 
 Rules:
-- Never fill Stage, Status, Note, Reason for failure, or salary fields — recruiter only
+- Never fill Stage, Status, Note, Reason for failure, or salary fields — recruiter only (exception: auto-write "Email missing - please fill in manually" in Note when email cannot be extracted)
 - Never delete existing rows; only add or (on explicit recruiter instruction) overwrite
 - Missing CV fields: leave blank, alert recruiter — do not guess
 - Referrer: blank unless source = Referral
@@ -881,7 +1056,8 @@ class State(TypedDict):
 
 tools = [
     create_job_folder,
-    process_cv_file, get_alerts, clear_alerts, resolve_duplicate,
+    process_cv_file, get_alerts, clear_alerts,
+    resolve_duplicate, resolve_cross_role, resolve_sync_conflict,
     run_sync_now, get_sync_status,
 ]
 llm_with_tools = llm.bind_tools(tools)
