@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import threading
 import unicodedata
 import uuid
@@ -562,11 +563,12 @@ def create_job_folder(folder_name: str) -> str:
     """
     job_path = os.path.join(JOBS_BASE_DIR, folder_name)
     if os.path.exists(job_path):
-        return f"Folder '{folder_name}' already exists."
+        return f"Folder '{folder_name}' already exists.\nFOLDER_PATH: {job_path}"
     os.makedirs(job_path)
     for sub in JOB_SUB_FOLDERS:
         os.makedirs(os.path.join(job_path, sub))
-    return f"Created '{folder_name}' with sub-folders: {', '.join(JOB_SUB_FOLDERS)}."
+    return (f"Created '{folder_name}' with sub-folders: {', '.join(JOB_SUB_FOLDERS)}.\n"
+            f"FOLDER_PATH: {job_path}")
 
 @tool
 def process_cv_file(file_path: str) -> str:
@@ -709,7 +711,24 @@ Rules:
 - Never delete existing rows
 - Missing CV fields: leave blank, alert recruiter
 - Referrer: blank unless source = Referral
-- Sync: only Excel data, never copy CV files"""
+- Sync: only Excel data, never copy CV files
+
+Folder creation:
+- Always include the FOLDER_PATH line verbatim from create_job_folder result in your reply.
+
+Sync workflow:
+- After run_sync_now() completes, ALWAYS call get_alerts() immediately as your next step.
+- Report in plain language: "Sync complete: X added, Y updated, Z unchanged, N conflicts need attention."
+- If conflicts exist, show them immediately — never ask "would you like to check alerts?".
+- Format each conflict EXACTLY as follows (the CONFLICT_DATA line is required):
+
+  ⚠️ CONFLICT: [Candidate Name] ([email])
+  Job: [request_code]
+  Issue: [plain language explanation]
+  CONFLICT_DATA:{"email":"[email]","request_code":"[request_code]","type":"[type]"}
+
+  [type] values: sync_conflict | cross_role_duplicate | duplicate
+- After listing all conflicts, say: "Use the buttons above to resolve each conflict." """
 
 
 class State(TypedDict):
@@ -746,22 +765,46 @@ _ALLOWED_EXT = {".pdf", ".docx"}
 # job_id -> {"status", "total", "progress", "done", "failed", "current", "results", ...}
 _parse_jobs: dict[str, dict] = {}
 
-_PATH_RE = re.compile(r'[A-Za-z]:\\(?:[^\n\r"\'<>|*?]+)')
+_LINKIFY_RE = re.compile(
+    r'FOLDER_PATH:\s*([A-Za-z]:\\[^\n\r]+)'   # group 1 — folder path with explicit prefix
+    r'|'
+    r'([A-Za-z]:\\(?:[^\n\r"\'<>|*?]+))'      # group 2 — bare Windows path
+)
 
 def linkify_paths(text: str) -> str:
-    """Wrap Windows file/folder paths in markers so the UI can render them as clickable links."""
-    def replace(m: re.Match) -> str:
-        raw = m.group(0).rstrip(".,;:)'\"")
+    """Wrap Windows paths in markers so the UI can render them as links.
+
+    FOLDER_PATH: prefix  → __FOLDER__...__ENDFOLDER__  (Open Folder button)
+    Bare path            → __LINK__...__URL__...__ENDLINK__  (copy button)
+    """
+    def _replace(m: re.Match) -> str:
+        if m.group(1) is not None:
+            raw = m.group(1).rstrip(".,;:)'\"")
+            return f"__FOLDER__{raw}__ENDFOLDER__"
+        raw = m.group(2).rstrip(".,;:)'\"")
         url = "file:///" + raw.replace("\\", "/")
         return f"__LINK__{raw}__URL__{url}__ENDLINK__"
-    return _PATH_RE.sub(replace, text)
+    return _LINKIFY_RE.sub(_replace, text)
 
 
 async def handle_list_folders(request: Request) -> JSONResponse:
-    """Return the list of existing job folder names under JOBS_BASE_DIR."""
     base = Path(JOBS_BASE_DIR)
     folders: list[str] = sorted(d.name for d in base.iterdir() if d.is_dir()) if base.is_dir() else []
     return JSONResponse({"folders": folders})
+
+
+async def handle_open_folder(request: Request) -> JSONResponse:
+    path = request.query_params.get("path", "").strip()
+    if not path:
+        return JSONResponse({"status": "error", "response": "Missing path"}, status_code=400)
+    path_obj = Path(os.path.normpath(path))
+    if not path_obj.is_dir():
+        return JSONResponse({"status": "error", "response": f"Not a directory: {path}"}, status_code=404)
+    try:
+        subprocess.Popen(["explorer", str(path_obj)])
+        return JSONResponse({"status": "ok"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "response": str(e)}, status_code=500)
 
 
 async def handle_invocations(request: Request) -> JSONResponse:
@@ -940,6 +983,7 @@ app = Starlette(
         Route("/start-parse",           handle_start_parse,   methods=["POST"]),
         Route("/parse-status/{job_id}", handle_parse_status,  methods=["GET"]),
         Route("/list-folders",          handle_list_folders,  methods=["GET"]),
+        Route("/open-folder",           handle_open_folder,   methods=["GET"]),
         Route("/health",                handle_health,        methods=["GET"]),
     ],
     middleware=[

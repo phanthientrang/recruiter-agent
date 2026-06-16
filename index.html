@@ -501,6 +501,35 @@
     }
     .copy-path-btn:hover { color: #667eea; }
 
+    /* ─── Folder open button ─────────────────────────────────────── */
+    .folder-link-wrap { display: inline-flex; align-items: center; gap: 4px; }
+    .folder-open-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      border: 1.5px solid #667eea; border-radius: 7px;
+      background: #f0f0ff; color: #4f46e5;
+      font-size: 12px; font-weight: 600; padding: 3px 10px;
+      cursor: pointer; transition: background .15s; font-family: inherit;
+    }
+    .folder-open-btn:hover { background: #e0e7ff; }
+
+    /* ─── Conflict resolution buttons ──────────────────────────────── */
+    .conflict-btn-area {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      margin-top: 8px; padding: 10px 12px;
+      background: #fff8f0; border-left: 3px solid #f59e0b;
+      border-radius: 0 8px 8px 0; max-width: 100%;
+    }
+    .conflict-btn {
+      padding: 7px 14px; border-radius: 8px; border: none;
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: opacity .15s;
+    }
+    .conflict-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .conflict-btn-secondary { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; }
+    .conflict-btn-secondary:hover:not(:disabled) { background: #e5e7eb; }
+    .conflict-btn-primary { background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; }
+    .conflict-btn-primary:hover:not(:disabled) { opacity: .88; }
+
     /* ─── Sync modal ─────────────────────────────────────────────────── */
     .sync-icon { font-size: 48px; text-align: center; margin-bottom: 14px; }
     .sync-msg  { font-size: 15px; font-weight: 600; color: #111827; text-align: center; margin-bottom: 8px; }
@@ -854,40 +883,107 @@
     row.className = `msg-row ${role}`;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    renderTextWithLinks(bubble, text);
+    const conflicts = renderTextWithLinks(bubble, text);
     const ts = document.createElement("div");
     ts.className = "ts";
     ts.textContent = nowStr();
     row.appendChild(bubble);
     row.appendChild(ts);
+    if (role === "agent" && conflicts.length) {
+      conflicts.forEach(data => {
+        const area = buildConflictButtons(data);
+        if (area) row.appendChild(area);
+      });
+    }
     messagesEl.appendChild(row);
     scrollBottom();
     return row;
   }
 
+  function buildConflictButtons(data) {
+    const { email, request_code, type } = data;
+    if (!email || !request_code || !type) return null;
+    const defs = {
+      duplicate: [
+        ["✓ Keep existing",     `Resolve duplicate: email="${email}" request_code="${request_code}" action=keep`],
+        ["✏️ Overwrite with new", `Resolve duplicate: email="${email}" request_code="${request_code}" action=overwrite`],
+      ],
+      cross_role_duplicate: [
+        ["✓ Skip",              `Resolve cross-role: email="${email}" request_code="${request_code}" action=skip`],
+        ["+ Add for this role", `Resolve cross-role: email="${email}" request_code="${request_code}" action=add`],
+      ],
+      sync_conflict: [
+        ["✓ Keep existing",     `Resolve sync conflict: email="${email}" request_code="${request_code}" action=skip`],
+        ["+ Add as new entry",  `Resolve sync conflict: email="${email}" request_code="${request_code}" action=add_new`],
+      ],
+    }[type];
+    if (!defs) return null;
+    const area = document.createElement("div");
+    area.className = "conflict-btn-area";
+    defs.forEach(([label, msg], i) => {
+      const btn = document.createElement("button");
+      btn.className = "conflict-btn " + (i === 0 ? "conflict-btn-secondary" : "conflict-btn-primary");
+      btn.textContent = label;
+      btn.onclick = () => {
+        area.querySelectorAll(".conflict-btn").forEach(b => b.disabled = true);
+        sendToAgent(msg, label);
+      };
+      area.appendChild(btn);
+    });
+    return area;
+  }
+
   function renderTextWithLinks(container, text) {
-    const marker = /__LINK__([\s\S]*?)__URL__([\s\S]*?)__ENDLINK__/g;
+    // Strip CONFLICT_DATA lines and collect for button rendering
+    const conflicts = [];
+    text = text.replace(/CONFLICT_DATA:(\{[^\n]+\})\n?/g, (_, json) => {
+      try { conflicts.push(JSON.parse(json)); } catch(_) {}
+      return "";
+    });
+
+    // Handle __FOLDER__ (open-folder button) and __LINK__ (copy button) markers
+    const re = /__FOLDER__([\s\S]*?)__ENDFOLDER__|__LINK__([\s\S]*?)__URL__([\s\S]*?)__ENDLINK__/g;
     let last = 0, m;
-    while ((m = marker.exec(text)) !== null) {
+    while ((m = re.exec(text)) !== null) {
       if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
-      const linkText = m[1], url = m[2];
-      const wrap = document.createElement("span");
-      const a = document.createElement("a");
-      a.textContent = linkText;
-      a.href = url;
-      a.className = "path-link";
-      a.title = "Open file/folder";
-      wrap.appendChild(a);
-      const copyBtn = document.createElement("button");
-      copyBtn.textContent = "📋";
-      copyBtn.className = "copy-path-btn";
-      copyBtn.title = "Copy path";
-      copyBtn.onclick = ev => { ev.preventDefault(); navigator.clipboard.writeText(linkText).catch(() => {}); };
-      wrap.appendChild(copyBtn);
-      container.appendChild(wrap);
+      if (m[1] !== undefined) {
+        // Folder path — render "📁 Open Folder" button
+        const path = m[1];
+        const wrap = document.createElement("span");
+        wrap.className = "folder-link-wrap";
+        const openBtn = document.createElement("button");
+        openBtn.className = "folder-open-btn";
+        openBtn.textContent = "📁 Open Folder";
+        openBtn.title = path;
+        openBtn.onclick = () => fetchJSON(`${getBaseUrl()}/open-folder?path=${encodeURIComponent(path)}`).catch(() => {});
+        const copyBtn = document.createElement("button");
+        copyBtn.textContent = "📋";
+        copyBtn.className = "copy-path-btn";
+        copyBtn.title = "Copy path";
+        copyBtn.onclick = () => navigator.clipboard.writeText(path).catch(() => {});
+        wrap.appendChild(openBtn);
+        wrap.appendChild(copyBtn);
+        container.appendChild(wrap);
+      } else {
+        // Bare Windows path — render link + copy button
+        const linkText = m[2], url = m[3];
+        const wrap = document.createElement("span");
+        const a = document.createElement("a");
+        a.textContent = linkText; a.href = url;
+        a.className = "path-link"; a.title = "Open in Explorer";
+        const copyBtn = document.createElement("button");
+        copyBtn.textContent = "📋";
+        copyBtn.className = "copy-path-btn";
+        copyBtn.title = "Copy path";
+        copyBtn.onclick = ev => { ev.preventDefault(); navigator.clipboard.writeText(linkText).catch(() => {}); };
+        wrap.appendChild(a);
+        wrap.appendChild(copyBtn);
+        container.appendChild(wrap);
+      }
       last = m.index + m[0].length;
     }
     if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
+    return conflicts;
   }
 
   function showTyping() {
