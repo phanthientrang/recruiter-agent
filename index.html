@@ -1193,44 +1193,124 @@
     const count     = selectedFiles.length;
 
     closeModal();
-
-    const userMsg = count === 1
-      ? `📄 Upload CV: ${selectedFiles[0].name}\nJob: ${folder} › ${subfolder}`
-      : `📄 Upload ${count} CVs to: ${folder} › ${subfolder}\n${selectedFiles.map(f => "  • " + f.name).join("\n")}`;
-    appendMessage("user", userMsg);
+    appendMessage("user",
+      count === 1
+        ? `📄 Upload CV: ${selectedFiles[0].name}\nJob: ${folder} › ${subfolder}`
+        : `📄 Upload ${count} CVs to: ${folder} › ${subfolder}\n${selectedFiles.map(f => "  • " + f.name).join("\n")}`
+    );
     setDisabled(true);
 
+    // ── Phase 1: fast save (no AI) ───────────────────────────────────────────
+    const savedPaths = [];
     for (let i = 0; i < selectedFiles.length; i++) {
       const file = selectedFiles[i];
-      showTyping();
       const fd = new FormData();
       fd.append("folder",    folder);
       fd.append("subfolder", subfolder);
       fd.append("file",      file);
       try {
-        const r = await fetch(`${getBaseUrl()}/upload-cv`, {
+        const r    = await fetch(`${getBaseUrl()}/save-cv`, {
           method: "POST",
           headers: {"ngrok-skip-browser-warning": "true"},
           body: fd,
         });
         const data = await r.json();
-        hideTyping();
-        let text = data.response || JSON.stringify(data);
-        if (data.saved_to) text = `✓ Saved: ${data.saved_to}\n\n${text}`.trim();
-        if (count > 1) text = `(${i+1}/${count}) ${file.name}\n${text}`;
-        appendMessage(data.status === "success" ? "agent" : "error", text);
+        if (data.status === "saved") {
+          savedPaths.push(data.saved_to);
+          appendMessage("agent", `✅ ${data.name} saved to ${data.folder}/${data.subfolder}`);
+        } else {
+          appendMessage("error", `❌ ${file.name}: ${data.response || "Save failed"}`);
+        }
       } catch(e) {
-        hideTyping();
-        appendMessage("error",
-          (count > 1 ? `(${i+1}/${count}) ${file.name}: ` : "") +
-          "Upload failed. Check that local_server.py is running.\n(" + e.message + ")"
-        );
+        appendMessage("error", `❌ ${file.name}: Network error — ${e.message}`);
       }
     }
 
-    if (count > 1) appendMessage("agent", `✓ Done! All ${count} CV files have been processed.`);
+    if (!savedPaths.length) {
+      appendMessage("error", "No files were saved. Aborting.");
+      setDisabled(false); textarea.focus(); return;
+    }
+
+    const skipped = count - savedPaths.length;
+    appendMessage("agent",
+      skipped === 0
+        ? `🎉 All ${count} CV${count > 1 ? "s" : ""} uploaded successfully!`
+        : `⚠️ ${savedPaths.length}/${count} CVs saved (${skipped} failed).`
+    );
     setDisabled(false);
     textarea.focus();
+
+    // ── Phase 2: background AI parsing ──────────────────────────────────────
+    try {
+      const r = await fetch(`${getBaseUrl()}/start-parse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true",
+        },
+        body: JSON.stringify({files: savedPaths}),
+      });
+      const job = await r.json();
+      if (job.job_id) pollParseJob(job.job_id, savedPaths.length);
+    } catch(e) {
+      appendMessage("error", `⚠️ Could not start background parsing: ${e.message}`);
+    }
+  }
+
+  function pollParseJob(jobId, total) {
+    const progressRow    = appendMessage("agent", `⏳ Parsing CVs in background… (0/${total})`);
+    const progressBubble = progressRow.querySelector(".bubble");
+
+    async function check() {
+      try {
+        const r    = await fetch(`${getBaseUrl()}/parse-status/${jobId}`, {
+          headers: {"ngrok-skip-browser-warning": "true"},
+        });
+        const data = await r.json();
+        const prog = data.progress || 0;
+
+        if (data.status === "running") {
+          progressBubble.textContent = `⏳ Parsing CVs in background… (${prog}/${total})`;
+          setTimeout(check, 2500);
+          return;
+        }
+
+        // Finished
+        progressBubble.textContent = `✅ Parse complete (${total}/${total})`;
+        const done   = data.done   || 0;
+        const failed = data.failed || 0;
+        const notifBody = failed === 0
+          ? `✅ Excel Updated! ${done} candidate${done !== 1 ? "s" : ""} added to database.`
+          : `⚠️ ${done} added, ${failed} failed — see chat for details.`;
+
+        appendMessage(failed > 0 ? "error" : "agent", notifBody);
+        showBrowserNotification("Recruiter Assistant", notifBody);
+
+        if (failed > 0) {
+          const bad = (data.results || []).filter(r =>
+            !["success","no_excel","duplicate","cross_role_duplicate"].includes(r.status)
+          );
+          bad.forEach(r =>
+            appendMessage("error",
+              `❌ ${r.name}: [${r.status}] ${(r.messages || []).join("; ")}`)
+          );
+        }
+      } catch(e) {
+        progressBubble.textContent = `⚠️ Status check error: ${e.message}`;
+      }
+    }
+
+    setTimeout(check, 2500);
+  }
+
+  function showBrowserNotification(title, body) {
+    if (!("Notification" in window)) return;
+    const show = () => new Notification(title, {body});
+    if (Notification.permission === "granted") {
+      show();
+    } else if (Notification.permission !== "denied") {
+      Notification.requestPermission().then(p => { if (p === "granted") show(); });
+    }
   }
 
   /* ─── Modal 3: Sync ─────────────────────────────────────── */
@@ -1242,6 +1322,11 @@
 
   /* ─── Init ──────────────────────────────────────────────── */
   updateSettingsUI();
+
+  // Pre-request notification permission so the parse-complete popup works
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
 
   appendMessage("agent",
     "Hi! I'm your Recruiter Assistant.\n\n" +

@@ -21,7 +21,9 @@ import contextlib
 import json
 import os
 import re
+import threading
 import unicodedata
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional, TypedDict
@@ -759,6 +761,9 @@ graph = graph_builder.compile()
 # ---------------------------------------------------------------------------
 _ALLOWED_EXT = {".pdf", ".docx"}
 
+# job_id -> {"status", "total", "progress", "done", "failed", "current", "results", ...}
+_parse_jobs: dict[str, dict] = {}
+
 _PATH_RE = re.compile(r'[A-Za-z]:\\(?:[^\n\r"\'<>|*?]+)')
 
 def linkify_paths(text: str) -> str:
@@ -872,14 +877,153 @@ async def handle_health(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Phase-1 / Phase-2 handlers (fast-save + background parse)
+# ---------------------------------------------------------------------------
+
+def _parse_one(path: str, timeout: float = 120.0) -> dict:
+    """Run _process_cv in a sub-thread so we can apply a wall-clock timeout."""
+    result: dict = {}
+    exc_holder: list = []
+
+    def _run() -> None:
+        try:
+            result.update(_process_cv(path))
+        except Exception as e:  # noqa: BLE001
+            exc_holder.append(e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        return {"status": "timeout", "messages": [f"Parsing timed out after {int(timeout)}s."]}
+    if exc_holder:
+        raise exc_holder[0]
+    return result or {"status": "error", "messages": ["No result returned."]}
+
+
+def _parse_worker(job_id: str, file_paths: list[str]) -> None:
+    """Background thread: parse each saved CV one-by-one and write to Excel."""
+    job = _parse_jobs[job_id]
+    for i, path in enumerate(file_paths):
+        name = os.path.basename(path)
+        job["current"] = name
+        try:
+            result = _parse_one(path)
+            status = result.get("status", "error")
+            messages = result.get("messages", [])
+            if status in ("success", "no_excel", "duplicate", "cross_role_duplicate"):
+                job["done"] += 1
+            else:
+                job["failed"] += 1
+            job["results"].append({"name": name, "status": status, "messages": messages})
+        except Exception as e:  # noqa: BLE001
+            job["failed"] += 1
+            job["results"].append({"name": name, "status": "error", "messages": [str(e)]})
+        job["progress"] = i + 1
+    job["status"] = "complete" if job["failed"] == 0 else ("partial" if job["done"] > 0 else "failed")
+    job["finished_at"] = datetime.now().isoformat()
+
+
+async def handle_save_cv(request: Request) -> JSONResponse:
+    """Phase 1 — save a CV to disk immediately; no AI parsing."""
+    try:
+        form = await request.form()
+    except Exception as exc:
+        return JSONResponse({"status": "error", "response": f"Could not parse form: {exc}"}, status_code=400)
+
+    folder    = str(form.get("folder")    or "").strip()
+    subfolder = str(form.get("subfolder") or "").strip()
+    upload    = form.get("file")
+
+    if not folder or not subfolder or upload is None:
+        return JSONResponse(
+            {"status": "error", "response": "Fields 'folder', 'subfolder', and 'file' are required."},
+            status_code=400,
+        )
+    if subfolder not in JOB_SUB_FOLDERS:
+        return JSONResponse(
+            {"status": "error", "response": f"'subfolder' must be one of: {', '.join(JOB_SUB_FOLDERS)}"},
+            status_code=400,
+        )
+
+    raw_name = Path(upload.filename).name
+    safe_name = unicodedata.normalize("NFC", raw_name)
+    ext = Path(safe_name).suffix.lower()
+    if ext not in _ALLOWED_EXT:
+        return JSONResponse(
+            {"status": "error", "response": f"File type '{ext}' not supported. Use PDF or DOCX."},
+            status_code=400,
+        )
+
+    save_dir = Path(JOBS_BASE_DIR) / folder / subfolder
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / safe_name
+
+    contents = await upload.read()
+    with open(save_path, "wb") as fh:
+        fh.write(contents)
+
+    return JSONResponse({
+        "status":    "saved",
+        "name":      safe_name,
+        "saved_to":  str(save_path),
+        "folder":    folder,
+        "subfolder": subfolder,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+async def handle_start_parse(request: Request) -> JSONResponse:
+    """Phase 2 — kick off background parsing for a list of already-saved file paths."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"status": "error", "response": "Request body must be valid JSON."}, status_code=400)
+
+    files: list[str] = body.get("files", [])
+    if not files:
+        return JSONResponse({"status": "error", "response": "No files to parse."}, status_code=400)
+
+    job_id = uuid.uuid4().hex[:12]
+    _parse_jobs[job_id] = {
+        "status":      "running",
+        "total":       len(files),
+        "progress":    0,
+        "done":        0,
+        "failed":      0,
+        "current":     "",
+        "results":     [],
+        "started_at":  datetime.now().isoformat(),
+        "finished_at": None,
+    }
+
+    threading.Thread(target=_parse_worker, args=(job_id, files), daemon=True).start()
+    return JSONResponse({"job_id": job_id, "total": len(files), "status": "running"})
+
+
+async def handle_parse_status(request: Request) -> JSONResponse:
+    """Poll the current status of a background parse job."""
+    job_id = request.path_params.get("job_id", "")
+    job = _parse_jobs.get(job_id)
+    if not job:
+        return JSONResponse({"status": "error", "response": f"Unknown job_id: {job_id!r}"}, status_code=404)
+    return JSONResponse({"job_id": job_id, **job})
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 app = Starlette(
     routes=[
-        Route("/invocations",  handle_invocations,  methods=["POST"]),
-        Route("/upload-cv",    handle_upload_cv,    methods=["POST"]),
-        Route("/list-folders", handle_list_folders, methods=["GET"]),
-        Route("/health",       handle_health,        methods=["GET"]),
+        Route("/invocations",           handle_invocations,   methods=["POST"]),
+        # Phase-1/Phase-2 endpoints (new redesigned upload flow)
+        Route("/save-cv",               handle_save_cv,       methods=["POST"]),
+        Route("/start-parse",           handle_start_parse,   methods=["POST"]),
+        Route("/parse-status/{job_id}", handle_parse_status,  methods=["GET"]),
+        # Legacy (kept for backward compat, superseded by /save-cv + /start-parse)
+        Route("/upload-cv",             handle_upload_cv,     methods=["POST"]),
+        Route("/list-folders",          handle_list_folders,  methods=["GET"]),
+        Route("/health",                handle_health,         methods=["GET"]),
     ],
     middleware=[
         Middleware(CORSMiddleware, allow_origins=["*"],
