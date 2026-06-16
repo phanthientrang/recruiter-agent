@@ -58,74 +58,85 @@
     }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; }
 
-    /* ─── Settings bar ───────────────────────────────────────────────── */
-    .settings-bar {
-      background: #1e1b4b;
-      flex-shrink: 0;
-      user-select: none;
-    }
-    .settings-summary {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 7px 14px;
-      cursor: pointer;
+    /* ─── Gear button (header top-right) ────────────────────────────── */
+    .gear-wrap { position: relative; margin-left: auto; flex-shrink: 0; }
+    .gear-btn {
+      width: 36px; height: 36px; border-radius: 50%; border: none;
+      background: rgba(255,255,255,.18);
+      color: #fff; font-size: 17px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
       transition: background .15s;
+      position: relative;
     }
-    .settings-summary:hover { background: rgba(255,255,255,.06); }
-    .settings-icon  { font-size: 13px; flex-shrink: 0; }
-    .settings-label { font-size: 11px; font-weight: 600; color: #a5b4fc; text-transform: uppercase; letter-spacing: .06em; flex-shrink: 0; }
-    .settings-sep   { color: #4338ca; font-size: 12px; flex-shrink: 0; }
-    .settings-url-preview {
-      font-size: 12px; color: rgba(255,255,255,.55);
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      flex: 1; font-family: monospace;
+    .gear-btn:hover { background: rgba(255,255,255,.28); }
+    .gear-badge {
+      position: absolute; top: 1px; right: 1px;
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #fbbf24;
+      border: 2px solid #764ba2;
+      animation: blink 1.4s infinite;
     }
-    .settings-url-preview.unconfigured { color: #fbbf24; }
-    .settings-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-    .settings-dot.ok   { background: #4ade80; }
-    .settings-dot.warn { background: #fbbf24; animation: blink 1.4s infinite; }
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
-    .settings-chevron { font-size: 10px; color: #6366f1; flex-shrink: 0; transition: transform .2s; }
-    .settings-chevron.open { transform: rotate(180deg); }
+    .gear-badge.hidden { display: none; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
 
-    .settings-expanded {
-      padding: 0 14px 12px;
-      border-top: 1px solid rgba(255,255,255,.07);
+    /* ─── Settings panel (fixed, drops from gear icon) ───────────────── */
+    .settings-panel {
+      position: fixed;
+      z-index: 300;
+      width: 320px;
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.06);
+      padding: 18px;
+      animation: spIn .15s ease;
     }
-    .settings-expanded.hidden { display: none; }
-    .settings-input-row {
-      display: flex; gap: 8px; margin-top: 10px;
+    .settings-panel.hidden { display: none; }
+    @keyframes spIn {
+      from { opacity: 0; transform: translateY(-6px) scale(.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
     }
-    .settings-input-row input {
+    .sp-title {
+      font-size: 13px; font-weight: 700; color: #111827;
+      margin-bottom: 12px; display: flex; align-items: center; gap: 6px;
+    }
+    .sp-field-label {
+      font-size: 11.5px; font-weight: 600; color: #6b7280;
+      text-transform: uppercase; letter-spacing: .05em;
+      margin-bottom: 6px;
+    }
+    .sp-row { display: flex; gap: 8px; }
+    .sp-row input {
       flex: 1;
-      padding: 8px 12px;
-      border: 1.5px solid #4338ca;
-      border-radius: 8px;
-      background: rgba(255,255,255,.08);
-      color: #fff;
-      font-family: monospace; font-size: 13px;
-      outline: none;
-      transition: border-color .15s;
+      padding: 8px 11px;
+      border: 1.5px solid #e5e7eb; border-radius: 8px;
+      font-family: monospace; font-size: 13px; color: #111827;
+      outline: none; transition: border-color .15s; background: #f9fafb;
     }
-    .settings-input-row input:focus { border-color: #818cf8; }
-    .settings-input-row input::placeholder { color: rgba(255,255,255,.3); }
-    .settings-save-btn {
-      padding: 8px 16px;
-      background: #4f46e5; border: none; border-radius: 8px;
+    .sp-row input:focus { border-color: #667eea; background: #fff; }
+    .sp-row input::placeholder { color: #9ca3af; }
+    .sp-save-btn {
+      padding: 8px 16px; border: none; border-radius: 8px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
       color: #fff; font-family: inherit; font-size: 13px; font-weight: 600;
-      cursor: pointer; flex-shrink: 0; transition: background .15s;
+      cursor: pointer; flex-shrink: 0; transition: opacity .15s;
     }
-    .settings-save-btn:hover { background: #4338ca; }
-    .settings-hint {
-      margin-top: 7px;
-      font-size: 11.5px; color: rgba(255,255,255,.4); line-height: 1.5;
+    .sp-save-btn:hover { opacity: .88; }
+    .sp-hint {
+      margin-top: 10px; font-size: 11.5px; color: #6b7280; line-height: 1.6;
     }
-    .settings-hint code {
-      background: rgba(255,255,255,.1);
-      border-radius: 4px; padding: 1px 5px;
-      font-family: monospace; font-size: 11px; color: #a5b4fc;
+    .sp-hint code {
+      background: #f3f4f6; border-radius: 4px; padding: 1px 5px;
+      font-family: monospace; font-size: 11px; color: #374151;
     }
+    .sp-status {
+      margin-top: 10px; padding: 7px 10px;
+      border-radius: 7px; font-size: 12px; display: flex; align-items: center; gap: 7px;
+    }
+    .sp-status.ok   { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    .sp-status.warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+    .sp-status-dot  { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .sp-status.ok   .sp-status-dot { background: #22c55e; }
+    .sp-status.warn .sp-status-dot { background: #f59e0b; }
 
     /* ─── Toolbar ────────────────────────────────────────────────────── */
     .toolbar {
@@ -475,32 +486,11 @@
       <h1>Recruiter Assistant</h1>
       <div class="status"><span class="status-dot"></span>Online</div>
     </div>
+    <div class="gear-wrap">
+      <button class="gear-btn" id="gear-btn" onclick="toggleSettings(event)" title="Settings">⚙️</button>
+      <span class="gear-badge" id="gear-badge"></span>
+    </div>
   </header>
-
-  <!-- Settings bar (collapsible) -->
-  <div class="settings-bar">
-    <div class="settings-summary" onclick="toggleSettings()">
-      <span class="settings-icon">⚙</span>
-      <span class="settings-label">Endpoint</span>
-      <span class="settings-sep">·</span>
-      <span class="settings-url-preview unconfigured" id="settings-url-preview">Not configured</span>
-      <span class="settings-dot warn" id="settings-dot"></span>
-      <span class="settings-chevron" id="settings-chevron">▼</span>
-    </div>
-    <div class="settings-expanded hidden" id="settings-expanded">
-      <div class="settings-input-row">
-        <input type="url" id="settings-url-input"
-               placeholder="https://xxxx.ngrok-free.app"
-               onkeydown="if(event.key==='Enter')saveEndpoint()" />
-        <button class="settings-save-btn" onclick="saveEndpoint()">Save</button>
-      </div>
-      <div class="settings-hint">
-        1. Run <code>python local_server.py</code> &nbsp;
-        2. Run <code>ngrok http 8080</code> &nbsp;
-        3. Paste the <code>https://xxxx.ngrok-free.app</code> URL above and Save
-      </div>
-    </div>
-  </div>
 
   <!-- Quick-action toolbar -->
   <div class="toolbar">
@@ -532,6 +522,27 @@
         <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
       </svg>
     </button>
+  </div>
+</div>
+
+<!-- ═══════════════ SETTINGS PANEL ═══════════════ -->
+<div class="settings-panel hidden" id="settings-panel">
+  <div class="sp-title">⚙️ Settings</div>
+  <div class="sp-field-label">Agent Endpoint URL</div>
+  <div class="sp-row">
+    <input type="url" id="settings-url-input"
+           placeholder="https://xxx.ngrok-free.app"
+           onkeydown="if(event.key==='Enter')saveEndpoint()" />
+    <button class="sp-save-btn" onclick="saveEndpoint()">Save</button>
+  </div>
+  <div class="sp-status warn hidden" id="sp-status">
+    <span class="sp-status-dot"></span>
+    <span id="sp-status-text">Not configured</span>
+  </div>
+  <div class="sp-hint">
+    1. Run <code>python local_server.py</code><br>
+    2. Run <code>ngrok http 8080</code><br>
+    3. Paste the <code>https://xxx.ngrok-free.app</code> URL above and Save
   </div>
 </div>
 
@@ -707,28 +718,38 @@
   function getBaseUrl() { return _endpoint; }
 
   function updateSettingsUI() {
-    const preview  = document.getElementById("settings-url-preview");
-    const dot      = document.getElementById("settings-dot");
+    const badge    = document.getElementById("gear-badge");
+    const status   = document.getElementById("sp-status");
+    const statusTx = document.getElementById("sp-status-text");
     const urlInput = document.getElementById("settings-url-input");
-    if (_endpoint) {
-      preview.textContent = _endpoint.replace(/^https?:\/\//, "");
-      preview.classList.remove("unconfigured");
-      dot.className = "settings-dot ok";
-    } else {
-      preview.textContent = "Not configured";
-      preview.classList.add("unconfigured");
-      dot.className = "settings-dot warn";
-    }
     urlInput.value = _endpoint;
+    if (_endpoint) {
+      badge.classList.add("hidden");
+      status.className = "sp-status ok";
+      status.classList.remove("hidden");
+      statusTx.textContent = _endpoint.replace(/^https?:\/\//, "");
+    } else {
+      badge.classList.remove("hidden");
+      status.className = "sp-status warn";
+      status.classList.remove("hidden");
+      statusTx.textContent = "Not configured — paste your ngrok URL above";
+    }
   }
 
-  function toggleSettings() {
-    const panel   = document.getElementById("settings-expanded");
-    const chevron = document.getElementById("settings-chevron");
-    const isOpen  = !panel.classList.contains("hidden");
-    panel.classList.toggle("hidden", isOpen);
-    chevron.classList.toggle("open", !isOpen);
-    if (!isOpen) document.getElementById("settings-url-input").focus();
+  function toggleSettings(e) {
+    e.stopPropagation();
+    const panel  = document.getElementById("settings-panel");
+    const gearBtn = document.getElementById("gear-btn");
+    if (!panel.classList.contains("hidden")) {
+      panel.classList.add("hidden");
+      return;
+    }
+    // Position panel below the gear button
+    const rect = gearBtn.getBoundingClientRect();
+    panel.style.top   = (rect.bottom + 8) + "px";
+    panel.style.right  = (window.innerWidth - rect.right) + "px";
+    panel.classList.remove("hidden");
+    document.getElementById("settings-url-input").focus();
   }
 
   function saveEndpoint() {
@@ -736,9 +757,18 @@
     _endpoint = val;
     localStorage.setItem("agent_endpoint", val);
     updateSettingsUI();
-    document.getElementById("settings-expanded").classList.add("hidden");
-    document.getElementById("settings-chevron").classList.remove("open");
+    document.getElementById("settings-panel").classList.add("hidden");
   }
+
+  // Close settings panel on outside click
+  document.addEventListener("click", function(e) {
+    const panel   = document.getElementById("settings-panel");
+    const gearBtn = document.getElementById("gear-btn");
+    if (!panel.classList.contains("hidden") &&
+        !panel.contains(e.target) && !gearBtn.contains(e.target)) {
+      panel.classList.add("hidden");
+    }
+  });
 
   /* ─── Chat helpers ──────────────────────────────────────── */
 
@@ -795,10 +825,10 @@
     if (getBaseUrl()) return true;
     appendMessage("error",
       "No endpoint configured.\n\n" +
-      "Click ⚙ Settings above and paste your ngrok URL:\n" +
+      "Click the ⚙️ gear icon (top right) and paste your ngrok URL:\n" +
       "  1. python local_server.py\n" +
       "  2. ngrok http 8080\n" +
-      "  3. Paste the https://xxxx.ngrok-free.app URL in Settings"
+      "  3. Paste https://xxx.ngrok-free.app in Settings"
     );
     return false;
   }
@@ -1072,7 +1102,7 @@
     "Before the demo:\n" +
     "  1. python local_server.py\n" +
     "  2. ngrok http 8080\n" +
-    "  3. Paste the ngrok URL in ⚙ Settings above\n\n" +
+    "  3. Paste the ngrok URL via ⚙️ (top right)\n\n" +
     "Then use the buttons to:\n" +
     "📁  Create a job folder with standard sub-folders\n" +
     "📄  Upload a CV — file is saved locally and processed\n" +
