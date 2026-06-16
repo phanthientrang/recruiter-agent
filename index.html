@@ -453,6 +453,49 @@
       word-break: break-all; line-height: 1.6;
     }
 
+    /* ─── Folder combo + new-folder notice ─────────────────────────── */
+    .folder-combo { display: flex; gap: 6px; align-items: center; }
+    .folder-combo input { flex: 1; }
+    .folder-refresh {
+      flex-shrink: 0; width: 34px; height: 36px;
+      border: 1.5px solid #e5e7eb; border-radius: 9px;
+      background: #f9fafb; color: #6b7280; font-size: 15px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: border-color .15s, background .15s;
+    }
+    .folder-refresh:hover { border-color: #667eea; background: #faf5ff; color: #667eea; }
+    .new-folder-note {
+      margin-top: 6px; padding: 8px 10px;
+      background: #fffbeb; border: 1px solid #fde68a; border-radius: 7px;
+      font-size: 12px; color: #92400e; line-height: 1.5;
+    }
+    .loading-folders { font-size: 12px; color: #9ca3af; margin-top: 5px; }
+
+    /* ─── Multi-file list ────────────────────────────────────────────── */
+    .file-list {
+      margin-top: 8px; display: flex; flex-direction: column; gap: 4px;
+      max-height: 130px; overflow-y: auto;
+    }
+    .file-list-item {
+      display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+      background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 7px;
+      font-size: 12px; color: #166534;
+    }
+    .fi-name { flex: 1; font-weight: 500; word-break: break-all; }
+    .fi-size { color: #6b7280; flex-shrink: 0; }
+
+    /* ─── Path links in agent responses ─────────────────────────────── */
+    .path-link {
+      color: #5b21b6; text-decoration: underline; cursor: pointer;
+      word-break: break-all; font-family: monospace; font-size: 13px;
+    }
+    .path-link:hover { color: #667eea; }
+    .copy-path-btn {
+      border: none; background: none; cursor: pointer; font-size: 11px;
+      padding: 0 3px; color: #9ca3af; transition: color .15s; vertical-align: middle;
+    }
+    .copy-path-btn:hover { color: #667eea; }
+
     /* ─── Sync modal ─────────────────────────────────────────────────── */
     .sync-icon { font-size: 48px; text-align: center; margin-bottom: 14px; }
     .sync-msg  { font-size: 15px; font-weight: 600; color: #111827; text-align: center; margin-bottom: 8px; }
@@ -620,9 +663,17 @@
     <div class="wizard-step active" id="cv-step-1">
       <div class="field">
         <label>Job Folder Name</label>
-        <input type="text" id="cv-folder-input"
-               placeholder="e.g. ZDA - Data Scientist - 26-ZDA-3117" />
+        <div class="folder-combo">
+          <input type="text" id="cv-folder-input" list="folder-datalist"
+                 placeholder="Select or type folder name…" oninput="onFolderInput()" />
+          <datalist id="folder-datalist"></datalist>
+          <button class="folder-refresh" onclick="loadFolders()" title="Refresh folder list">↻</button>
+        </div>
         <div class="hint">Format: [Department] - [Position] - [Job Code]</div>
+        <div class="new-folder-note hidden" id="new-folder-note">
+          ⚠ This folder doesn't exist yet — it will be created automatically when the CV is uploaded.
+        </div>
+        <div class="loading-folders hidden" id="loading-folders">Loading folders…</div>
       </div>
     </div>
 
@@ -653,15 +704,15 @@
     <!-- Step 3 -->
     <div class="wizard-step" id="cv-step-3">
       <div class="field">
-        <label>CV File</label>
+        <label>CV File(s)</label>
         <div class="file-drop" id="file-drop"
              onclick="document.getElementById('cv-file-input').click()"
              ondragover="onDragOver(event)" ondrop="onDrop(event)"
              ondragleave="onDragLeave()">
           <div class="file-drop-icon">📄</div>
-          <div class="file-drop-text">Click to select file</div>
-          <div class="file-drop-hint">PDF or DOCX · or drag & drop</div>
-          <input type="file" id="cv-file-input" accept=".pdf,.docx"
+          <div class="file-drop-text">Click to select files</div>
+          <div class="file-drop-hint">PDF or DOCX · Multiple files OK · or drag & drop</div>
+          <input type="file" id="cv-file-input" accept=".pdf,.docx" multiple
                  style="display:none" onchange="onFileSelect()" />
         </div>
         <div class="file-info hidden" id="file-info">
@@ -671,6 +722,7 @@
             <div class="file-info-size" id="file-info-size"></div>
           </div>
         </div>
+        <div class="file-list hidden" id="file-list"></div>
       </div>
       <div class="path-preview hidden" id="path-preview">
         <strong>Will be saved to:</strong><br>
@@ -782,7 +834,8 @@
   let activeModal       = null;
   let cvStep            = 1;
   let selectedSubfolder = null;
-  let selectedFile      = null;
+  let selectedFiles     = [];
+  let _knownFolders     = [];
 
   function nowStr() {
     return new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
@@ -793,7 +846,7 @@
     row.className = `msg-row ${role}`;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = text;
+    renderTextWithLinks(bubble, text);
     const ts = document.createElement("div");
     ts.className = "ts";
     ts.textContent = nowStr();
@@ -802,6 +855,31 @@
     messagesEl.appendChild(row);
     scrollBottom();
     return row;
+  }
+
+  function renderTextWithLinks(container, text) {
+    const marker = /__LINK__([\s\S]*?)__URL__([\s\S]*?)__ENDLINK__/g;
+    let last = 0, m;
+    while ((m = marker.exec(text)) !== null) {
+      if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const linkText = m[1], url = m[2];
+      const wrap = document.createElement("span");
+      const a = document.createElement("a");
+      a.textContent = linkText;
+      a.href = url;
+      a.className = "path-link";
+      a.title = "Open file/folder";
+      wrap.appendChild(a);
+      const copyBtn = document.createElement("button");
+      copyBtn.textContent = "📋";
+      copyBtn.className = "copy-path-btn";
+      copyBtn.title = "Copy path";
+      copyBtn.onclick = ev => { ev.preventDefault(); navigator.clipboard.writeText(linkText).catch(() => {}); };
+      wrap.appendChild(copyBtn);
+      container.appendChild(wrap);
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
   }
 
   function showTyping() {
@@ -892,7 +970,7 @@
     activeModal = name;
     backdrop.classList.add("open");
     document.getElementById("modal-" + name).classList.add("open");
-    if (name === "upload") resetCvWizard();
+    if (name === "upload") { resetCvWizard(); loadFolders(); }
   }
 
   function closeModal() {
@@ -950,8 +1028,38 @@
 
   /* ─── Modal 2: Upload CV Wizard ─────────────────────────── */
 
+  async function loadFolders() {
+    const base = getBaseUrl();
+    document.getElementById("loading-folders").classList.remove("hidden");
+    document.getElementById("folder-datalist").innerHTML = "";
+    if (!base) { document.getElementById("loading-folders").classList.add("hidden"); return; }
+    try {
+      const res = await fetch(`${base}/list-folders`, {
+        headers: {"ngrok-skip-browser-warning": "true"}
+      });
+      const data = await res.json();
+      _knownFolders = data.folders || [];
+      const dl = document.getElementById("folder-datalist");
+      _knownFolders.forEach(f => {
+        const opt = document.createElement("option");
+        opt.value = f;
+        dl.appendChild(opt);
+      });
+    } catch(e) {
+      _knownFolders = [];
+    } finally {
+      document.getElementById("loading-folders").classList.add("hidden");
+    }
+  }
+
+  function onFolderInput() {
+    const val = document.getElementById("cv-folder-input").value.trim();
+    const isNew = val.length > 0 && !_knownFolders.includes(val);
+    document.getElementById("new-folder-note").classList.toggle("hidden", !isNew);
+  }
+
   function resetCvWizard() {
-    cvStep = 1; selectedSubfolder = null; selectedFile = null;
+    cvStep = 1; selectedSubfolder = null; selectedFiles = [];
     [1,2,3].forEach(n => {
       document.getElementById("step-ind-" + n).className = "step" + (n === 1 ? " active" : "");
       document.getElementById("cv-step-"  + n).className = "wizard-step" + (n === 1 ? " active" : "");
@@ -963,6 +1071,9 @@
     document.getElementById("file-info").classList.add("hidden");
     document.getElementById("file-drop").classList.remove("hidden");
     document.getElementById("path-preview").classList.add("hidden");
+    document.getElementById("new-folder-note").classList.add("hidden");
+    const fl = document.getElementById("file-list");
+    fl.innerHTML = ""; fl.classList.add("hidden");
     document.getElementById("cv-back-btn").classList.add("hidden");
     document.getElementById("cv-cancel-btn").classList.remove("hidden");
     document.getElementById("cv-next-btn").textContent = "Next →";
@@ -1008,24 +1119,49 @@
   function onFileSelect() {
     const input = document.getElementById("cv-file-input");
     if (!input.files.length) return;
-    selectedFile = input.files[0];
-    showFileInfo(selectedFile);
+    selectedFiles = Array.from(input.files);
+    showFileInfo(selectedFiles);
   }
 
-  function showFileInfo(file) {
+  function showFileInfo(files) {
     document.getElementById("file-drop").classList.add("hidden");
     document.getElementById("file-info").classList.remove("hidden");
-    document.getElementById("file-info-name").textContent = file.name;
-    document.getElementById("file-info-size").textContent = formatBytes(file.size);
+    if (files.length === 1) {
+      document.getElementById("file-info-name").textContent = files[0].name;
+      document.getElementById("file-info-size").textContent = formatBytes(files[0].size);
+      document.getElementById("file-list").classList.add("hidden");
+    } else {
+      document.getElementById("file-info-name").textContent = files.length + " files selected";
+      const total = files.reduce((s, f) => s + f.size, 0);
+      document.getElementById("file-info-size").textContent = formatBytes(total) + " total";
+      const listEl = document.getElementById("file-list");
+      listEl.innerHTML = "";
+      files.forEach(f => {
+        const item = document.createElement("div");
+        item.className = "file-list-item";
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "fi-name"; nameSpan.textContent = f.name;
+        const sizeSpan = document.createElement("span");
+        sizeSpan.className = "fi-size"; sizeSpan.textContent = formatBytes(f.size);
+        item.appendChild(nameSpan); item.appendChild(sizeSpan);
+        listEl.appendChild(item);
+      });
+      listEl.classList.remove("hidden");
+    }
     updatePathPreview();
   }
 
   function updatePathPreview() {
-    if (!selectedFile) return;
+    if (!selectedFiles.length) return;
     const folder    = document.getElementById("cv-folder-input").value.trim();
     const subfolder = selectedSubfolder || "";
-    const path      = [folder, subfolder, selectedFile.name].filter(Boolean).join(" \\ ");
-    document.getElementById("path-preview-text").textContent = path;
+    let preview;
+    if (selectedFiles.length === 1) {
+      preview = [folder, subfolder, selectedFiles[0].name].filter(Boolean).join(" \\ ");
+    } else {
+      preview = selectedFiles.map(f => [folder, subfolder, f.name].filter(Boolean).join(" \\ ")).join("\n");
+    }
+    document.getElementById("path-preview-text").textContent = preview;
     document.getElementById("path-preview").classList.remove("hidden");
   }
 
@@ -1040,51 +1176,61 @@
   function onDrop(e) {
     e.preventDefault();
     document.getElementById("file-drop").classList.remove("drag-over");
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    const ext = "." + file.name.split(".").pop().toLowerCase();
-    if (![".pdf",".docx"].includes(ext)) { alert("Please drop a PDF or DOCX file."); return; }
-    selectedFile = file;
-    showFileInfo(file);
+    const all    = Array.from(e.dataTransfer.files);
+    const valid  = all.filter(f => [".pdf",".docx"].includes("." + f.name.split(".").pop().toLowerCase()));
+    if (!valid.length) { alert("Please drop PDF or DOCX files."); return; }
+    if (valid.length < all.length) alert(`${all.length - valid.length} file(s) skipped (not PDF or DOCX).`);
+    selectedFiles = valid;
+    showFileInfo(valid);
   }
 
-  function submitCv() {
+  async function submitCv() {
     if (!requireEndpoint()) { closeModal(); return; }
-    if (!selectedFile) { alert("Please select a CV file."); return; }
+    if (!selectedFiles.length) { alert("Please select at least one CV file."); return; }
 
     const folder    = document.getElementById("cv-folder-input").value.trim();
     const subfolder = selectedSubfolder;
+    const count     = selectedFiles.length;
 
     closeModal();
-    appendMessage("user", `📄 Upload CV: ${selectedFile.name}\nJob: ${folder} › ${subfolder}`);
+
+    const userMsg = count === 1
+      ? `📄 Upload CV: ${selectedFiles[0].name}\nJob: ${folder} › ${subfolder}`
+      : `📄 Upload ${count} CVs to: ${folder} › ${subfolder}\n${selectedFiles.map(f => "  • " + f.name).join("\n")}`;
+    appendMessage("user", userMsg);
     setDisabled(true);
-    showTyping();
 
-    const fd = new FormData();
-    fd.append("folder",    folder);
-    fd.append("subfolder", subfolder);
-    fd.append("file",      selectedFile);
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      showTyping();
+      const fd = new FormData();
+      fd.append("folder",    folder);
+      fd.append("subfolder", subfolder);
+      fd.append("file",      file);
+      try {
+        const r = await fetch(`${getBaseUrl()}/upload-cv`, {
+          method: "POST",
+          headers: {"ngrok-skip-browser-warning": "true"},
+          body: fd,
+        });
+        const data = await r.json();
+        hideTyping();
+        let text = data.response || JSON.stringify(data);
+        if (data.saved_to) text = `✓ Saved: ${data.saved_to}\n\n${text}`.trim();
+        if (count > 1) text = `(${i+1}/${count}) ${file.name}\n${text}`;
+        appendMessage(data.status === "success" ? "agent" : "error", text);
+      } catch(e) {
+        hideTyping();
+        appendMessage("error",
+          (count > 1 ? `(${i+1}/${count}) ${file.name}: ` : "") +
+          "Upload failed. Check that local_server.py is running.\n(" + e.message + ")"
+        );
+      }
+    }
 
-    // Do NOT set Content-Type manually — browser adds the multipart boundary automatically
-    fetch(`${getBaseUrl()}/upload-cv`, {
-      method: "POST",
-      headers: {"ngrok-skip-browser-warning": "true"},
-      body: fd,
-    })
-    .then(r => r.json())
-    .then(data => {
-      hideTyping();
-      let text = data.response || JSON.stringify(data);
-      if (data.saved_to) text = `✓ CV saved to:\n${data.saved_to}\n\n${text}`.trim();
-      appendMessage(data.status === "success" ? "agent" : "error", text);
-    })
-    .catch(e => {
-      hideTyping();
-      appendMessage("error",
-        "Upload failed. Check that local_server.py is running.\n(" + e.message + ")"
-      );
-    })
-    .finally(() => { setDisabled(false); textarea.focus(); });
+    if (count > 1) appendMessage("agent", `✓ Done! All ${count} CV files have been processed.`);
+    setDisabled(false);
+    textarea.focus();
   }
 
   /* ─── Modal 3: Sync ─────────────────────────────────────── */

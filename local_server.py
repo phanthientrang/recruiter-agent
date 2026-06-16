@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -758,6 +759,23 @@ graph = graph_builder.compile()
 # ---------------------------------------------------------------------------
 _ALLOWED_EXT = {".pdf", ".docx"}
 
+_PATH_RE = re.compile(r'[A-Za-z]:\\(?:[^\n\r"\'<>|*?]+)')
+
+def linkify_paths(text: str) -> str:
+    """Wrap Windows file/folder paths in markers so the UI can render them as clickable links."""
+    def replace(m: re.Match) -> str:
+        raw = m.group(0).rstrip(".,;:)'\"")
+        url = "file:///" + raw.replace("\\", "/")
+        return f"__LINK__{raw}__URL__{url}__ENDLINK__"
+    return _PATH_RE.sub(replace, text)
+
+
+async def handle_list_folders(request: Request) -> JSONResponse:
+    """Return the list of existing job folder names under JOBS_BASE_DIR."""
+    base = Path(JOBS_BASE_DIR)
+    folders: list[str] = sorted(d.name for d in base.iterdir() if d.is_dir()) if base.is_dir() else []
+    return JSONResponse({"folders": folders})
+
 
 async def handle_invocations(request: Request) -> JSONResponse:
     try:
@@ -776,7 +794,7 @@ async def handle_invocations(request: Request) -> JSONResponse:
         )
         return JSONResponse({
             "status": "success",
-            "response": result["messages"][-1].content,
+            "response": linkify_paths(result["messages"][-1].content),
             "timestamp": datetime.now().isoformat(),
         })
     except Exception as exc:
@@ -835,14 +853,14 @@ async def handle_upload_cv(request: Request) -> JSONResponse:
         )
         return JSONResponse({
             "status": "success",
-            "response": result["messages"][-1].content,
+            "response": linkify_paths(result["messages"][-1].content),
             "saved_to": str(save_path),
             "timestamp": datetime.now().isoformat(),
         })
     except Exception as exc:
         return JSONResponse({
             "status": "error",
-            "response": f"CV saved to {save_path} but agent processing failed: {exc}",
+            "response": linkify_paths(f"CV saved to {save_path} but agent processing failed: {exc}"),
             "saved_to": str(save_path),
             "timestamp": datetime.now().isoformat(),
         }, status_code=500)
@@ -858,9 +876,10 @@ async def handle_health(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 app = Starlette(
     routes=[
-        Route("/invocations", handle_invocations, methods=["POST"]),
-        Route("/upload-cv",   handle_upload_cv,   methods=["POST"]),
-        Route("/health",      handle_health,       methods=["GET"]),
+        Route("/invocations",  handle_invocations,  methods=["POST"]),
+        Route("/upload-cv",    handle_upload_cv,    methods=["POST"]),
+        Route("/list-folders", handle_list_folders, methods=["GET"]),
+        Route("/health",       handle_health,        methods=["GET"]),
     ],
     middleware=[
         Middleware(CORSMiddleware, allow_origins=["*"],
