@@ -114,6 +114,124 @@ def _get_headers(ws) -> list[str]:
     return []
 
 # ---------------------------------------------------------------------------
+# Excel in-memory cache  (loaded at startup, updated on every write)
+# ---------------------------------------------------------------------------
+_excel_cache:   dict[str, list[dict]] = {}   # email_lower → list of row metadata
+_excel_lock     = threading.Lock()
+_excel_pending: list[dict] = []              # rows staged for batch flush
+_excel_next_row: int       = 3               # next assignable row number in Excel
+
+def _init_excel_cache() -> None:
+    """Load existing Excel rows into _excel_cache for O(1) duplicate lookups."""
+    global _excel_cache, _excel_next_row
+    _excel_cache = {}
+    _excel_next_row = 3
+    if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
+        return
+    wb = _open_wb(EXCEL_PATH, read_only=True)
+    if "Database" not in wb.sheetnames:
+        wb.close(); return
+    ws = wb["Database"]
+    headers = None; max_row = 2
+    for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        if headers is None:
+            headers = [str(c).strip() if c is not None else "" for c in row]
+            continue
+        if not any(c is not None for c in row):
+            continue
+        row_dict = dict(zip(headers, row))
+        email_l = str(row_dict.get("Email") or "").strip().lower()
+        if email_l:
+            _excel_cache.setdefault(email_l, []).append({
+                "request_code":   str(row_dict.get("Request code") or "").strip(),
+                "candidate_name": row_dict.get("Candidate name"),
+                "ta_incharge":    str(row_dict.get("TA Incharge") or "").strip().lower(),
+                "row_num":        row_idx,
+            })
+        max_row = row_idx
+    _excel_next_row = max_row + 1
+    wb.close()
+
+def _check_duplicate_cache(email: str, request_code: str) -> dict | None:
+    email_l = email.strip().lower()
+    rc      = request_code.strip()
+    with _excel_lock:
+        for entry in _excel_cache.get(email_l, []):
+            if entry["request_code"] == rc:
+                return {"row_number": entry["row_num"], "candidate_name": entry["candidate_name"]}
+    return None
+
+def _check_cross_role_cache(email: str, exclude_request_code: str) -> list[dict]:
+    email_l = email.strip().lower()
+    exc_rc  = exclude_request_code.strip()
+    ta_l    = (TA_INCHARGE or "").strip().lower()
+    found   = []
+    with _excel_lock:
+        for entry in _excel_cache.get(email_l, []):
+            if entry["request_code"] != exc_rc and entry["ta_incharge"] == ta_l:
+                found.append({
+                    "row_number":     entry["row_num"],
+                    "candidate_name": entry["candidate_name"],
+                    "request_code":   entry["request_code"],
+                })
+    return found
+
+def _cache_add_row(row_data: dict) -> int:
+    """Stage a new row in memory. Flush to disk later with _flush_excel_pending()."""
+    global _excel_next_row
+    email_l = str(row_data.get("Email") or "").strip().lower()
+    with _excel_lock:
+        row_num = _excel_next_row
+        _excel_next_row += 1
+        if email_l:
+            _excel_cache.setdefault(email_l, []).append({
+                "request_code":   str(row_data.get("Request code") or "").strip(),
+                "candidate_name": row_data.get("Candidate name"),
+                "ta_incharge":    str(row_data.get("TA Incharge") or "").strip().lower(),
+                "row_num":        row_num,
+            })
+        _excel_pending.append({"__row_num__": row_num, **row_data})
+    return row_num
+
+def _flush_excel_pending() -> int:
+    """Write all staged rows to Excel in a single wb.save(). Returns count written."""
+    with _excel_lock:
+        if not _excel_pending:
+            return 0
+        pending = list(_excel_pending)
+        _excel_pending.clear()
+    if not EXCEL_PATH:
+        return 0
+    wb = _open_wb(EXCEL_PATH)
+    if "Database" not in wb.sheetnames:
+        wb.create_sheet("Database")
+    ws = wb["Database"]
+    headers = _get_headers(ws)
+    if not any(headers):
+        for col, h in enumerate(DB_COLUMNS, 1):
+            ws.cell(row=1, column=col, value=h)
+        headers = DB_COLUMNS
+    for row_data in sorted(pending, key=lambda r: r.get("__row_num__", 0)):
+        row_num = row_data["__row_num__"]
+        if "No" in headers:
+            ws.cell(row=row_num, column=headers.index("No") + 1, value=row_num - 2)
+        for col_name, value in row_data.items():
+            if col_name in ("__row_num__", "Profile"):
+                continue
+            if col_name in headers:
+                ws.cell(row=row_num, column=headers.index(col_name) + 1, value=value)
+        if "Profile" in headers and row_data.get("Profile"):
+            fp   = str(row_data["Profile"])
+            disp = str(row_data.get("Candidate name") or os.path.basename(fp))
+            url  = "file:///" + fp.replace("\\", "/")
+            cell = ws.cell(row=row_num, column=headers.index("Profile") + 1, value=disp)
+            cell.hyperlink = url
+            cell.font = Font(color="0563C1", underline="single")
+    wb.save(EXCEL_PATH)
+    wb.close()
+    return len(pending)
+
+# ---------------------------------------------------------------------------
 # CV text extraction
 # ---------------------------------------------------------------------------
 def _resolve_path(file_path: str) -> str:
@@ -153,18 +271,20 @@ def _extract_cv_text(file_path: str) -> str:
 # LLM CV field extraction
 # ---------------------------------------------------------------------------
 class _CVFields(BaseModel):
-    candidate_name:   Optional[str] = None
-    email:            Optional[str] = None
-    phone:            Optional[str] = None
-    latest_company:   Optional[str] = None
-    latest_position:  Optional[str] = None
+    full_name:         Optional[str]       = None
+    email:             Optional[str]       = None
+    phone:             Optional[str]       = None
+    current_company:   Optional[str]       = None
+    current_title:     Optional[str]       = None
+    years_experience:  Optional[int]       = None
+    top_skills:        Optional[list[str]] = None
+    highest_education: Optional[str]       = None
 
 def _parse_cv_with_llm(text: str) -> _CVFields:
     structured_llm = llm.with_structured_output(_CVFields)
     return structured_llm.invoke(
-        "Extract the following fields from the CV below. "
-        "Return null for any field that cannot be clearly determined.\n\n"
-        f"CV:\n{text[:6000]}"
+        "Extract CV fields. Return null for missing data. Reply with JSON only. No preamble.\n"
+        f"CV:\n{text[:3000]}"
     )
 
 # ---------------------------------------------------------------------------
@@ -232,10 +352,16 @@ def _check_cross_role_duplicate(email: str, exclude_request_code: str) -> list[d
     wb.close(); return found
 
 def _add_row(row_data: dict) -> int:
+    """Write one row directly to Excel (used by agent tools). Flushes pending batch first."""
+    global _excel_next_row
+    _flush_excel_pending()   # ensure file is consistent before we open it
     if not EXCEL_PATH:
         raise ValueError("EXCEL_PATH is not configured in .env")
     if not os.path.exists(EXCEL_PATH):
         raise FileNotFoundError(f"Excel file not found: {EXCEL_PATH}")
+    with _excel_lock:
+        row_num = _excel_next_row
+        _excel_next_row += 1
     wb = _open_wb(EXCEL_PATH)
     if "Database" not in wb.sheetnames:
         wb.create_sheet("Database")
@@ -245,24 +371,33 @@ def _add_row(row_data: dict) -> int:
         for col, h in enumerate(DB_COLUMNS, 1):
             ws.cell(row=1, column=col, value=h)
         headers = DB_COLUMNS
-    next_row = max(ws.max_row + 1, 3)
     if "No" in headers:
-        ws.cell(row=next_row, column=headers.index("No") + 1, value=next_row - 2)
+        ws.cell(row=row_num, column=headers.index("No") + 1, value=row_num - 2)
     for col_name, value in row_data.items():
         if col_name == "Profile": continue
         if col_name in headers:
-            ws.cell(row=next_row, column=headers.index(col_name) + 1, value=value)
+            ws.cell(row=row_num, column=headers.index(col_name) + 1, value=value)
     if "Profile" in headers and row_data.get("Profile"):
-        file_path_val = str(row_data["Profile"])
-        display = str(row_data.get("Candidate name") or os.path.basename(file_path_val))
-        url  = "file:///" + file_path_val.replace("\\", "/")
-        cell = ws.cell(row=next_row, column=headers.index("Profile") + 1, value=display)
+        fp   = str(row_data["Profile"])
+        disp = str(row_data.get("Candidate name") or os.path.basename(fp))
+        url  = "file:///" + fp.replace("\\", "/")
+        cell = ws.cell(row=row_num, column=headers.index("Profile") + 1, value=disp)
         cell.hyperlink = url
         cell.font = Font(color="0563C1", underline="single")
     wb.save(EXCEL_PATH); wb.close()
-    return next_row
+    email_l = str(row_data.get("Email") or "").strip().lower()
+    if email_l:
+        with _excel_lock:
+            _excel_cache.setdefault(email_l, []).append({
+                "request_code":   str(row_data.get("Request code") or "").strip(),
+                "candidate_name": row_data.get("Candidate name"),
+                "ta_incharge":    str(row_data.get("TA Incharge") or "").strip().lower(),
+                "row_num":        row_num,
+            })
+    return row_num
 
 def _overwrite_row(row_number: int, row_data: dict):
+    _flush_excel_pending()   # ensure file is consistent before opening
     wb = _open_wb(EXCEL_PATH); ws = wb["Database"]
     headers = _get_headers(ws)
     for col_name, value in row_data.items():
@@ -270,13 +405,21 @@ def _overwrite_row(row_number: int, row_data: dict):
         if col_name in headers:
             ws.cell(row=row_number, column=headers.index(col_name) + 1, value=value)
     if "Profile" in headers and row_data.get("Profile"):
-        file_path_val = str(row_data["Profile"])
-        display = str(row_data.get("Candidate name") or os.path.basename(file_path_val))
-        url  = "file:///" + file_path_val.replace("\\", "/")
-        cell = ws.cell(row=row_number, column=headers.index("Profile") + 1, value=display)
+        fp   = str(row_data["Profile"])
+        disp = str(row_data.get("Candidate name") or os.path.basename(fp))
+        url  = "file:///" + fp.replace("\\", "/")
+        cell = ws.cell(row=row_number, column=headers.index("Profile") + 1, value=disp)
         cell.hyperlink = url
         cell.font = Font(color="0563C1", underline="single")
     wb.save(EXCEL_PATH); wb.close()
+    email_l = str(row_data.get("Email") or "").strip().lower()
+    if email_l:
+        with _excel_lock:
+            for entry in _excel_cache.get(email_l, []):
+                if entry["row_num"] == row_number:
+                    entry["candidate_name"] = row_data.get("Candidate name")
+                    entry["ta_incharge"]    = str(row_data.get("TA Incharge") or "").strip().lower()
+                    break
 
 # ---------------------------------------------------------------------------
 # Processed-files tracking
@@ -299,14 +442,14 @@ def _mark_processed(file_path: str):
 def _build_row_data(cv: _CVFields, folder: dict, file_path: str) -> dict:
     return {
         "Request code":       folder.get("request_code"),
-        "Candidate name":     cv.candidate_name,
+        "Candidate name":     cv.full_name,
         "Processed Team":     folder.get("processed_team"),
         "Processed Position": folder.get("processed_position"),
         "Entry date":         datetime.now().strftime("%Y-%m-%d"),
         "Source":             folder.get("source"),
         "Referrer":           None,
-        "Latest company":     cv.latest_company,
-        "Latest position":    cv.latest_position,
+        "Latest company":     cv.current_company,
+        "Latest position":    cv.current_title,
         "Email":              cv.email,
         "Phone":              cv.phone,
         "TA Incharge":        TA_INCHARGE,
@@ -334,16 +477,16 @@ def _process_cv(file_path: str) -> dict:
         result.update(status="error", messages=[f"LLM extraction failed: {e}"])
         _alerts.append({**result, "timestamp": datetime.now().isoformat()}); return result
     missing = [label for label, val in [
-        ("Candidate name", cv.candidate_name), ("Email", cv.email), ("Phone", cv.phone),
-        ("Latest company", cv.latest_company), ("Latest position", cv.latest_position),
+        ("Candidate name", cv.full_name), ("Email", cv.email), ("Phone", cv.phone),
+        ("Latest company", cv.current_company), ("Latest position", cv.current_title),
     ] if not val]
     if missing:
         result["messages"].append(f"Warning - Missing fields (left blank): {', '.join(missing)}")
     if cv.email:
-        dup = _check_duplicate(cv.email, folder["request_code"])
+        dup = _check_duplicate_cache(cv.email, folder["request_code"])
         if dup:
             result.update(status="duplicate", messages=result["messages"] + [
-                f"DUPLICATE: {cv.candidate_name or 'Unknown'} ({cv.email}) already exists "
+                f"DUPLICATE: {cv.full_name or 'Unknown'} ({cv.email}) already exists "
                 f"in row {dup['row_number']} for {folder['request_code']}. "
                 "Use resolve_duplicate to keep or overwrite."
             ])
@@ -351,11 +494,11 @@ def _process_cv(file_path: str) -> dict:
                 "file_path": os.path.normpath(file_path), "cv_fields": cv.model_dump(),
                 "folder_info": folder, "duplicate_row": dup["row_number"]})
             _mark_processed(file_path); return result
-        cross_role = _check_cross_role_duplicate(cv.email, folder["request_code"])
+        cross_role = _check_cross_role_cache(cv.email, folder["request_code"])
         if cross_role:
             codes = ", ".join(r["request_code"] for r in cross_role)
             result.update(status="cross_role_duplicate", messages=result["messages"] + [
-                f"CROSS-ROLE: {cv.candidate_name or 'This candidate'} ({cv.email}) is already "
+                f"CROSS-ROLE: {cv.full_name or 'This candidate'} ({cv.email}) is already "
                 f"in your pipeline for another role ({codes}). "
                 "Use resolve_cross_role to add a new row or skip."
             ])
@@ -368,9 +511,9 @@ def _process_cv(file_path: str) -> dict:
         row_data["Note"] = "Email missing - please fill in manually"
     if EXCEL_PATH:
         try:
-            new_row = _add_row(row_data)
+            new_row = _cache_add_row(row_data)   # stage in memory; flushed after batch
             result.update(status="success")
-            result["messages"].append(f"Added {cv.candidate_name or 'candidate'} to database at row {new_row}.")
+            result["messages"].append(f"Added {cv.full_name or 'candidate'} to database at row {new_row}.")
         except Exception as e:
             result.update(status="error")
             result["messages"].append(f"Excel write failed: {e}")
@@ -608,7 +751,7 @@ def resolve_duplicate(email: str, request_code: str, action: str) -> str:
                     and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
                     and str(a.get("folder_info", {}).get("request_code") or "") == request_code.strip()), None)
     if not pending: return f"No pending duplicate for '{email}' / '{request_code}'."
-    name = pending["cv_fields"].get("candidate_name") or "Unknown"
+    name = pending["cv_fields"].get("full_name") or "Unknown"
     row_num = pending["duplicate_row"]
     if action.lower() == "keep":
         _alerts.remove(pending); return f"Kept existing row {row_num} for {name}. No changes made."
@@ -632,7 +775,7 @@ def resolve_cross_role(email: str, new_request_code: str, action: str) -> str:
                     and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
                     and str(a.get("folder_info", {}).get("request_code") or "") == new_request_code.strip()), None)
     if not pending: return f"No pending cross-role alert for '{email}' / '{new_request_code}'."
-    name = pending["cv_fields"].get("candidate_name") or "Unknown"
+    name = pending["cv_fields"].get("full_name") or "Unknown"
     if action.lower() == "skip":
         _alerts.remove(pending); return f"Skipped adding {name} for {new_request_code}. No changes made."
     if action.lower() == "add":
@@ -883,6 +1026,7 @@ def _parse_worker(job_id: str, file_paths: list[str]) -> None:
             job["failed"] += 1
             job["results"].append({"name": name, "status": "error", "messages": [str(e)]})
         job["progress"] = i + 1
+    _flush_excel_pending()   # one write for the whole batch
     job["status"] = "complete" if job["failed"] == 0 else ("partial" if job["done"] > 0 else "failed")
     job["finished_at"] = datetime.now().isoformat()
 
@@ -972,6 +1116,9 @@ async def handle_parse_status(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "response": f"Unknown job_id: {job_id!r}"}, status_code=404)
     return JSONResponse({"job_id": job_id, **job})
 
+
+# Load Excel rows into memory so duplicate checks are O(1) during CV parsing
+_init_excel_cache()
 
 # ---------------------------------------------------------------------------
 # App
