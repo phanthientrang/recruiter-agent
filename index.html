@@ -58,6 +58,75 @@
     }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; }
 
+    /* ─── Settings bar ───────────────────────────────────────────────── */
+    .settings-bar {
+      background: #1e1b4b;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .settings-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .settings-summary:hover { background: rgba(255,255,255,.06); }
+    .settings-icon  { font-size: 13px; flex-shrink: 0; }
+    .settings-label { font-size: 11px; font-weight: 600; color: #a5b4fc; text-transform: uppercase; letter-spacing: .06em; flex-shrink: 0; }
+    .settings-sep   { color: #4338ca; font-size: 12px; flex-shrink: 0; }
+    .settings-url-preview {
+      font-size: 12px; color: rgba(255,255,255,.55);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      flex: 1; font-family: monospace;
+    }
+    .settings-url-preview.unconfigured { color: #fbbf24; }
+    .settings-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .settings-dot.ok   { background: #4ade80; }
+    .settings-dot.warn { background: #fbbf24; animation: blink 1.4s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .settings-chevron { font-size: 10px; color: #6366f1; flex-shrink: 0; transition: transform .2s; }
+    .settings-chevron.open { transform: rotate(180deg); }
+
+    .settings-expanded {
+      padding: 0 14px 12px;
+      border-top: 1px solid rgba(255,255,255,.07);
+    }
+    .settings-expanded.hidden { display: none; }
+    .settings-input-row {
+      display: flex; gap: 8px; margin-top: 10px;
+    }
+    .settings-input-row input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1.5px solid #4338ca;
+      border-radius: 8px;
+      background: rgba(255,255,255,.08);
+      color: #fff;
+      font-family: monospace; font-size: 13px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .settings-input-row input:focus { border-color: #818cf8; }
+    .settings-input-row input::placeholder { color: rgba(255,255,255,.3); }
+    .settings-save-btn {
+      padding: 8px 16px;
+      background: #4f46e5; border: none; border-radius: 8px;
+      color: #fff; font-family: inherit; font-size: 13px; font-weight: 600;
+      cursor: pointer; flex-shrink: 0; transition: background .15s;
+    }
+    .settings-save-btn:hover { background: #4338ca; }
+    .settings-hint {
+      margin-top: 7px;
+      font-size: 11.5px; color: rgba(255,255,255,.4); line-height: 1.5;
+    }
+    .settings-hint code {
+      background: rgba(255,255,255,.1);
+      border-radius: 4px; padding: 1px 5px;
+      font-family: monospace; font-size: 11px; color: #a5b4fc;
+    }
+
     /* ─── Toolbar ────────────────────────────────────────────────────── */
     .toolbar {
       display: flex;
@@ -270,8 +339,7 @@
       letter-spacing: .04em;
     }
     .field input[type="text"],
-    .field select,
-    .field textarea {
+    .field select {
       width: 100%;
       padding: 9px 12px;
       border: 1.5px solid #e5e7eb;
@@ -286,12 +354,10 @@
     .field input::placeholder { color: #9ca3af; }
     .hint { font-size: 12px; color: #6b7280; margin-top: 5px; }
 
-    /* Dept row */
     .dept-row { display: flex; gap: 8px; }
     .dept-row select { flex: 1; }
     .dept-row input  { flex: 1; }
 
-    /* Folder name preview */
     .folder-preview {
       background: #f0fdf4;
       border: 1px solid #bbf7d0;
@@ -373,7 +439,7 @@
       background: #f8fafc; border: 1px solid #e2e8f0;
       border-radius: 8px; padding: 10px 12px;
       font-size: 12px; color: #475569; font-family: monospace;
-      word-break: break-all;
+      word-break: break-all; line-height: 1.6;
     }
 
     /* ─── Sync modal ─────────────────────────────────────────────────── */
@@ -389,10 +455,7 @@
     }
     .btn-cancel { background: #f3f4f6; color: #374151; }
     .btn-cancel:hover { background: #e5e7eb; }
-    .btn-primary {
-      background: linear-gradient(135deg, #667eea, #764ba2);
-      color: #fff;
-    }
+    .btn-primary { background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; }
     .btn-primary:hover { opacity: .88; }
     .btn-primary:active, .btn-cancel:active { transform: scale(.97); }
     .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
@@ -413,6 +476,31 @@
       <div class="status"><span class="status-dot"></span>Online</div>
     </div>
   </header>
+
+  <!-- Settings bar (collapsible) -->
+  <div class="settings-bar">
+    <div class="settings-summary" onclick="toggleSettings()">
+      <span class="settings-icon">⚙</span>
+      <span class="settings-label">Endpoint</span>
+      <span class="settings-sep">·</span>
+      <span class="settings-url-preview unconfigured" id="settings-url-preview">Not configured</span>
+      <span class="settings-dot warn" id="settings-dot"></span>
+      <span class="settings-chevron" id="settings-chevron">▼</span>
+    </div>
+    <div class="settings-expanded hidden" id="settings-expanded">
+      <div class="settings-input-row">
+        <input type="url" id="settings-url-input"
+               placeholder="https://xxxx.ngrok-free.app"
+               onkeydown="if(event.key==='Enter')saveEndpoint()" />
+        <button class="settings-save-btn" onclick="saveEndpoint()">Save</button>
+      </div>
+      <div class="settings-hint">
+        1. Run <code>python local_server.py</code> &nbsp;
+        2. Run <code>ngrok http 8080</code> &nbsp;
+        3. Paste the <code>https://xxxx.ngrok-free.app</code> URL above and Save
+      </div>
+    </div>
+  </div>
 
   <!-- Quick-action toolbar -->
   <div class="toolbar">
@@ -499,8 +587,7 @@
     <button class="modal-close" onclick="closeModal()">✕</button>
   </div>
 
-  <!-- Step indicators -->
-  <div class="steps" id="cv-steps">
+  <div class="steps">
     <div class="step active" id="step-ind-1">
       <span>1</span>
       <div class="step-label">Job Folder</div>
@@ -518,7 +605,7 @@
   </div>
 
   <div class="modal-body">
-    <!-- Step 1: Job Folder -->
+    <!-- Step 1 -->
     <div class="wizard-step active" id="cv-step-1">
       <div class="field">
         <label>Job Folder Name</label>
@@ -528,36 +615,31 @@
       </div>
     </div>
 
-    <!-- Step 2: Sub-folder / Source -->
+    <!-- Step 2 -->
     <div class="wizard-step" id="cv-step-2">
       <div class="field">
         <label>Candidate Source</label>
         <div class="radio-group" id="subfolder-group">
-          <label class="radio-option" onclick="selectSubfolder(this, 'LinkedIn')">
-            <input type="radio" name="subfolder" value="LinkedIn" />
-            🔗 LinkedIn
+          <label class="radio-option" onclick="selectSubfolder(this,'LinkedIn')">
+            <input type="radio" name="subfolder" value="LinkedIn" />🔗 LinkedIn
           </label>
-          <label class="radio-option" onclick="selectSubfolder(this, 'VNG Careers')">
-            <input type="radio" name="subfolder" value="VNG Careers" />
-            🏢 VNG Careers
+          <label class="radio-option" onclick="selectSubfolder(this,'VNG Careers')">
+            <input type="radio" name="subfolder" value="VNG Careers" />🏢 VNG Careers
           </label>
-          <label class="radio-option" onclick="selectSubfolder(this, 'Referral')">
-            <input type="radio" name="subfolder" value="Referral" />
-            🤝 Referral
+          <label class="radio-option" onclick="selectSubfolder(this,'Referral')">
+            <input type="radio" name="subfolder" value="Referral" />🤝 Referral
           </label>
-          <label class="radio-option" onclick="selectSubfolder(this, 'TA Search')">
-            <input type="radio" name="subfolder" value="TA Search" />
-            🔍 TA Search
+          <label class="radio-option" onclick="selectSubfolder(this,'TA Search')">
+            <input type="radio" name="subfolder" value="TA Search" />🔍 TA Search
           </label>
-          <label class="radio-option" onclick="selectSubfolder(this, 'Others')">
-            <input type="radio" name="subfolder" value="Others" />
-            📌 Others
+          <label class="radio-option" onclick="selectSubfolder(this,'Others')">
+            <input type="radio" name="subfolder" value="Others" />📌 Others
           </label>
         </div>
       </div>
     </div>
 
-    <!-- Step 3: CV File -->
+    <!-- Step 3 -->
     <div class="wizard-step" id="cv-step-3">
       <div class="field">
         <label>CV File</label>
@@ -567,9 +649,8 @@
              ondragleave="onDragLeave()">
           <div class="file-drop-icon">📄</div>
           <div class="file-drop-text">Click to select file</div>
-          <div class="file-drop-hint">PDF, DOC, DOCX · or drag & drop</div>
-          <input type="file" id="cv-file-input"
-                 accept=".pdf,.doc,.docx"
+          <div class="file-drop-hint">PDF or DOCX · or drag & drop</div>
+          <input type="file" id="cv-file-input" accept=".pdf,.docx"
                  style="display:none" onchange="onFileSelect()" />
         </div>
         <div class="file-info hidden" id="file-info">
@@ -581,7 +662,7 @@
         </div>
       </div>
       <div class="path-preview hidden" id="path-preview">
-        <strong>Path the agent will process:</strong><br>
+        <strong>Will be saved to:</strong><br>
         <span id="path-preview-text"></span>
       </div>
     </div>
@@ -600,7 +681,7 @@
     <h2>🔄 Sync Database</h2>
     <button class="modal-close" onclick="closeModal()">✕</button>
   </div>
-  <div class="modal-body" style="padding-top:24px; padding-bottom:24px;">
+  <div class="modal-body" style="padding-top:24px;padding-bottom:24px;">
     <div class="sync-icon">🔄</div>
     <p class="sync-msg">Sync your recruitment database<br>with the team file?</p>
     <p class="sync-hint" style="margin-top:8px;">
@@ -619,35 +700,73 @@
 
 <!-- ═══════════════ SCRIPT ═══════════════ -->
 <script>
-  const ENDPOINT = "https://endpoint-8c052130-5efa-49bd-92b9-a38678d2db75.agentbase-runtime.aiplatform.vngcloud.vn/invocations";
+  /* ─── Endpoint management ───────────────────────────────── */
+
+  let _endpoint = (localStorage.getItem("agent_endpoint") || "").replace(/\/$/, "");
+
+  function getBaseUrl() { return _endpoint; }
+
+  function updateSettingsUI() {
+    const preview  = document.getElementById("settings-url-preview");
+    const dot      = document.getElementById("settings-dot");
+    const urlInput = document.getElementById("settings-url-input");
+    if (_endpoint) {
+      preview.textContent = _endpoint.replace(/^https?:\/\//, "");
+      preview.classList.remove("unconfigured");
+      dot.className = "settings-dot ok";
+    } else {
+      preview.textContent = "Not configured";
+      preview.classList.add("unconfigured");
+      dot.className = "settings-dot warn";
+    }
+    urlInput.value = _endpoint;
+  }
+
+  function toggleSettings() {
+    const panel   = document.getElementById("settings-expanded");
+    const chevron = document.getElementById("settings-chevron");
+    const isOpen  = !panel.classList.contains("hidden");
+    panel.classList.toggle("hidden", isOpen);
+    chevron.classList.toggle("open", !isOpen);
+    if (!isOpen) document.getElementById("settings-url-input").focus();
+  }
+
+  function saveEndpoint() {
+    const val = document.getElementById("settings-url-input").value.trim().replace(/\/$/, "");
+    _endpoint = val;
+    localStorage.setItem("agent_endpoint", val);
+    updateSettingsUI();
+    document.getElementById("settings-expanded").classList.add("hidden");
+    document.getElementById("settings-chevron").classList.remove("open");
+  }
+
+  /* ─── Chat helpers ──────────────────────────────────────── */
 
   const messagesEl = document.getElementById("messages");
   const textarea   = document.getElementById("chat-textarea");
   const sendBtn    = document.getElementById("send-btn");
   const backdrop   = document.getElementById("backdrop");
 
-  let busy        = false;
-  let typingEl    = null;
-  let activeModal = null;
-  let cvStep      = 1;
+  let busy              = false;
+  let typingEl          = null;
+  let activeModal       = null;
+  let cvStep            = 1;
   let selectedSubfolder = null;
   let selectedFile      = null;
 
-  /* ─── Chat helpers ──────────────────────────────────────── */
-
-  function now() {
-    return new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  function nowStr() {
+    return new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
   }
 
   function appendMessage(role, text) {
     const row    = document.createElement("div");
     row.className = `msg-row ${role}`;
-    const bubble  = document.createElement("div");
+    const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = text;
     const ts = document.createElement("div");
     ts.className = "ts";
-    ts.textContent = now();
+    ts.textContent = nowStr();
     row.appendChild(bubble);
     row.appendChild(ts);
     messagesEl.appendChild(row);
@@ -658,19 +777,13 @@
   function showTyping() {
     typingEl = document.createElement("div");
     typingEl.className = "typing-row";
-    typingEl.innerHTML = `<div class="typing-bubble">
-      <span></span><span></span><span></span></div>`;
+    typingEl.innerHTML = `<div class="typing-bubble"><span></span><span></span><span></span></div>`;
     messagesEl.appendChild(typingEl);
     scrollBottom();
   }
 
-  function hideTyping() {
-    if (typingEl) { typingEl.remove(); typingEl = null; }
-  }
-
-  function scrollBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
+  function hideTyping() { if (typingEl) { typingEl.remove(); typingEl = null; } }
+  function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
   function setDisabled(state) {
     busy = state;
@@ -678,18 +791,33 @@
     sendBtn.disabled  = state;
   }
 
+  function requireEndpoint() {
+    if (getBaseUrl()) return true;
+    appendMessage("error",
+      "No endpoint configured.\n\n" +
+      "Click ⚙ Settings above and paste your ngrok URL:\n" +
+      "  1. python local_server.py\n" +
+      "  2. ngrok http 8080\n" +
+      "  3. Paste the https://xxxx.ngrok-free.app URL in Settings"
+    );
+    return false;
+  }
+
   /* ─── Core send / receive ───────────────────────────────── */
 
   async function sendToAgent(message, displayMessage) {
-    const shown = displayMessage || message;
-    appendMessage("user", shown);
+    if (!requireEndpoint()) return;
+    appendMessage("user", displayMessage || message);
     setDisabled(true);
     showTyping();
     try {
-      const res = await fetch(ENDPOINT, {
+      const res = await fetch(`${getBaseUrl()}/invocations`, {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({message})
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true",
+        },
+        body: JSON.stringify({message}),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -697,7 +825,9 @@
       appendMessage("agent", data.response ?? data.message ?? JSON.stringify(data));
     } catch(e) {
       hideTyping();
-      appendMessage("error", "Could not reach the agent. Please try again.\n(" + e.message + ")");
+      appendMessage("error",
+        "Could not reach the agent. Check that local_server.py is running and the ngrok URL is correct.\n(" + e.message + ")"
+      );
     } finally {
       setDisabled(false);
       textarea.focus();
@@ -712,9 +842,7 @@
   });
 
   textarea.addEventListener("keydown", e => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault(); chatSend();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(); }
   });
 
   sendBtn.addEventListener("click", chatSend);
@@ -749,54 +877,43 @@
   function onDeptChange() {
     const sel    = document.getElementById("dept-select");
     const custom = document.getElementById("dept-custom");
-    if (sel.value === "__custom__") {
-      custom.classList.remove("hidden");
-      custom.focus();
-    } else {
-      custom.classList.add("hidden");
-      custom.value = "";
-    }
+    const isOther = sel.value === "__custom__";
+    custom.classList.toggle("hidden", !isOther);
+    if (isOther) custom.focus();
+    else custom.value = "";
     updateFolderPreview();
   }
 
   function getDept() {
     const sel = document.getElementById("dept-select");
-    if (sel.value === "__custom__") {
-      return document.getElementById("dept-custom").value.trim();
-    }
-    return sel.value;
+    return sel.value === "__custom__"
+      ? document.getElementById("dept-custom").value.trim()
+      : sel.value;
   }
 
   function updateFolderPreview() {
-    const dept     = getDept();
-    const position = document.getElementById("position-input").value.trim();
-    const jobcode  = document.getElementById("jobcode-input").value.trim();
-    const parts    = [dept, position, jobcode].filter(Boolean);
-    document.getElementById("folder-preview-name").textContent =
-      parts.length ? parts.join(" - ") : "—";
+    const parts = [
+      getDept(),
+      document.getElementById("position-input").value.trim(),
+      document.getElementById("jobcode-input").value.trim(),
+    ].filter(Boolean);
+    document.getElementById("folder-preview-name").textContent = parts.length ? parts.join(" - ") : "—";
   }
 
   function submitFolder() {
     const dept     = getDept();
     const position = document.getElementById("position-input").value.trim();
     const jobcode  = document.getElementById("jobcode-input").value.trim();
+    if (!dept || !position || !jobcode) { alert("Please fill in all three fields."); return; }
 
-    if (!dept || !position || !jobcode) {
-      alert("Please fill in all three fields.");
-      return;
-    }
-
-    const folderName = `${dept} - ${position} - ${jobcode}`;
+    const name = `${dept} - ${position} - ${jobcode}`;
     closeModal();
-    sendToAgent(
-      `Create a job folder named "${folderName}"`,
-      `📁 Create job folder: ${folderName}`
-    );
-    // Reset form
-    document.getElementById("dept-select").value = "";
-    document.getElementById("dept-custom").value = "";
+    sendToAgent(`Create a job folder named "${name}"`, `📁 Create job folder: ${name}`);
+
+    document.getElementById("dept-select").value    = "";
+    document.getElementById("dept-custom").value    = "";
     document.getElementById("position-input").value = "";
-    document.getElementById("jobcode-input").value = "";
+    document.getElementById("jobcode-input").value  = "";
     document.getElementById("folder-preview-name").textContent = "—";
     document.getElementById("dept-custom").classList.add("hidden");
   }
@@ -804,45 +921,25 @@
   /* ─── Modal 2: Upload CV Wizard ─────────────────────────── */
 
   function resetCvWizard() {
-    cvStep = 1;
-    selectedSubfolder = null;
-    selectedFile      = null;
-
-    // Reset step indicators
+    cvStep = 1; selectedSubfolder = null; selectedFile = null;
     [1,2,3].forEach(n => {
-      const el = document.getElementById("step-ind-" + n);
-      el.classList.remove("active","done");
+      document.getElementById("step-ind-" + n).className = "step" + (n === 1 ? " active" : "");
+      document.getElementById("cv-step-"  + n).className = "wizard-step" + (n === 1 ? " active" : "");
     });
-    document.getElementById("step-ind-1").classList.add("active");
-
-    // Reset wizard step panels
-    [1,2,3].forEach(n => {
-      const el = document.getElementById("cv-step-" + n);
-      el.classList.toggle("active", n === 1);
-    });
-
-    // Reset radio buttons
-    document.querySelectorAll("#subfolder-group .radio-option")
-      .forEach(el => el.classList.remove("selected"));
-    document.querySelectorAll("#subfolder-group input[type=radio]")
-      .forEach(el => el.checked = false);
-
-    // Reset file info
+    document.querySelectorAll("#subfolder-group .radio-option").forEach(el => el.classList.remove("selected"));
+    document.querySelectorAll("#subfolder-group input[type=radio]").forEach(el => el.checked = false);
     document.getElementById("cv-folder-input").value = "";
     document.getElementById("cv-file-input").value   = "";
     document.getElementById("file-info").classList.add("hidden");
     document.getElementById("file-drop").classList.remove("hidden");
     document.getElementById("path-preview").classList.add("hidden");
-
-    // Reset footer buttons
     document.getElementById("cv-back-btn").classList.add("hidden");
     document.getElementById("cv-cancel-btn").classList.remove("hidden");
     document.getElementById("cv-next-btn").textContent = "Next →";
   }
 
   function selectSubfolder(labelEl, value) {
-    document.querySelectorAll("#subfolder-group .radio-option")
-      .forEach(el => el.classList.remove("selected"));
+    document.querySelectorAll("#subfolder-group .radio-option").forEach(el => el.classList.remove("selected"));
     labelEl.classList.add("selected");
     selectedSubfolder = value;
     labelEl.querySelector("input").checked = true;
@@ -850,40 +947,32 @@
 
   function cvNext() {
     if (cvStep === 1) {
-      const folder = document.getElementById("cv-folder-input").value.trim();
-      if (!folder) { alert("Please enter the job folder name."); return; }
+      if (!document.getElementById("cv-folder-input").value.trim()) { alert("Please enter the job folder name."); return; }
       goCvStep(2);
     } else if (cvStep === 2) {
       if (!selectedSubfolder) { alert("Please select a candidate source."); return; }
       goCvStep(3);
-    } else if (cvStep === 3) {
+    } else {
       submitCv();
     }
   }
 
-  function cvBack() {
-    if (cvStep > 1) goCvStep(cvStep - 1);
-  }
+  function cvBack() { if (cvStep > 1) goCvStep(cvStep - 1); }
 
   function goCvStep(target) {
-    // Update step panel
     document.getElementById("cv-step-" + cvStep).classList.remove("active");
     document.getElementById("cv-step-" + target).classList.add("active");
 
-    // Update indicators
     const prev = document.getElementById("step-ind-" + cvStep);
     const next = document.getElementById("step-ind-" + target);
     prev.classList.remove("active");
-    if (target > cvStep) prev.classList.add("done");
-    else prev.classList.remove("done");
+    prev.classList.toggle("done", target > cvStep);
     next.classList.remove("done");
     next.classList.add("active");
 
     cvStep = target;
-
-    // Footer buttons
     document.getElementById("cv-back-btn").classList.toggle("hidden", cvStep === 1);
-    document.getElementById("cv-next-btn").textContent = (cvStep === 3) ? "✓ Submit" : "Next →";
+    document.getElementById("cv-next-btn").textContent = cvStep === 3 ? "✓ Submit" : "Next →";
   }
 
   function onFileSelect() {
@@ -895,11 +984,9 @@
 
   function showFileInfo(file) {
     document.getElementById("file-drop").classList.add("hidden");
-    const infoEl = document.getElementById("file-info");
-    infoEl.classList.remove("hidden");
+    document.getElementById("file-info").classList.remove("hidden");
     document.getElementById("file-info-name").textContent = file.name;
     document.getElementById("file-info-size").textContent = formatBytes(file.size);
-
     updatePathPreview();
   }
 
@@ -907,76 +994,90 @@
     if (!selectedFile) return;
     const folder    = document.getElementById("cv-folder-input").value.trim();
     const subfolder = selectedSubfolder || "";
-    const filename  = selectedFile.name;
-    const path      = [folder, subfolder, filename].filter(Boolean).join(" \\ ");
-
-    const previewEl = document.getElementById("path-preview");
+    const path      = [folder, subfolder, selectedFile.name].filter(Boolean).join(" \\ ");
     document.getElementById("path-preview-text").textContent = path;
-    previewEl.classList.remove("hidden");
+    document.getElementById("path-preview").classList.remove("hidden");
   }
 
   function formatBytes(bytes) {
-    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024)        return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   }
 
-  /* Drag & drop */
-  function onDragOver(e) {
-    e.preventDefault();
-    document.getElementById("file-drop").classList.add("drag-over");
-  }
-  function onDragLeave() {
-    document.getElementById("file-drop").classList.remove("drag-over");
-  }
+  function onDragOver(e) { e.preventDefault(); document.getElementById("file-drop").classList.add("drag-over"); }
+  function onDragLeave() { document.getElementById("file-drop").classList.remove("drag-over"); }
   function onDrop(e) {
     e.preventDefault();
     document.getElementById("file-drop").classList.remove("drag-over");
     const file = e.dataTransfer.files[0];
     if (!file) return;
-    const allowed = [".pdf", ".doc", ".docx"];
     const ext = "." + file.name.split(".").pop().toLowerCase();
-    if (!allowed.includes(ext)) { alert("Please drop a PDF, DOC, or DOCX file."); return; }
+    if (![".pdf",".docx"].includes(ext)) { alert("Please drop a PDF or DOCX file."); return; }
     selectedFile = file;
     showFileInfo(file);
   }
 
   function submitCv() {
+    if (!requireEndpoint()) { closeModal(); return; }
     if (!selectedFile) { alert("Please select a CV file."); return; }
+
     const folder    = document.getElementById("cv-folder-input").value.trim();
     const subfolder = selectedSubfolder;
-    const filename  = selectedFile.name;
-
-    const agentMsg =
-      `Process the CV file for the following candidate:\n` +
-      `- Job folder: ${folder}\n` +
-      `- Source: ${subfolder}\n` +
-      `- File: ${filename}\n\n` +
-      `Full path to process: ${folder}\\${subfolder}\\${filename}`;
-
-    const displayMsg = `📄 Upload CV: ${filename}\nJob: ${folder} › ${subfolder}`;
 
     closeModal();
-    sendToAgent(agentMsg, displayMsg);
+    appendMessage("user", `📄 Upload CV: ${selectedFile.name}\nJob: ${folder} › ${subfolder}`);
+    setDisabled(true);
+    showTyping();
+
+    const fd = new FormData();
+    fd.append("folder",    folder);
+    fd.append("subfolder", subfolder);
+    fd.append("file",      selectedFile);
+
+    // Do NOT set Content-Type manually — browser adds the multipart boundary automatically
+    fetch(`${getBaseUrl()}/upload-cv`, {
+      method: "POST",
+      headers: {"ngrok-skip-browser-warning": "true"},
+      body: fd,
+    })
+    .then(r => r.json())
+    .then(data => {
+      hideTyping();
+      let text = data.response || JSON.stringify(data);
+      if (data.saved_to) text = `✓ CV saved to:\n${data.saved_to}\n\n${text}`.trim();
+      appendMessage(data.status === "success" ? "agent" : "error", text);
+    })
+    .catch(e => {
+      hideTyping();
+      appendMessage("error",
+        "Upload failed. Check that local_server.py is running.\n(" + e.message + ")"
+      );
+    })
+    .finally(() => { setDisabled(false); textarea.focus(); });
   }
 
   /* ─── Modal 3: Sync ─────────────────────────────────────── */
 
   function submitSync() {
     closeModal();
-    sendToAgent(
-      "Run the database sync now",
-      "🔄 Sync database with team file"
-    );
+    sendToAgent("Run the database sync now", "🔄 Sync database with team file");
   }
 
-  /* ─── Welcome message ───────────────────────────────────── */
+  /* ─── Init ──────────────────────────────────────────────── */
+  updateSettingsUI();
+
   appendMessage("agent",
-    "Hi! I'm your Recruiter Assistant. Use the buttons above to:\n\n" +
+    "Hi! I'm your Recruiter Assistant.\n\n" +
+    "Before the demo:\n" +
+    "  1. python local_server.py\n" +
+    "  2. ngrok http 8080\n" +
+    "  3. Paste the ngrok URL in ⚙ Settings above\n\n" +
+    "Then use the buttons to:\n" +
     "📁  Create a job folder with standard sub-folders\n" +
-    "📄  Process a CV and add the candidate to your database\n" +
+    "📄  Upload a CV — file is saved locally and processed\n" +
     "🔄  Sync your database with the team file\n\n" +
-    "Or just type a message below to ask me anything."
+    "Or just type a message below."
   );
 
   textarea.focus();
