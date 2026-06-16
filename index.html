@@ -1220,21 +1220,47 @@
       fd.append("folder",    folder);
       fd.append("subfolder", subfolder);
       fd.append("file",      file);
+
+      const saveUrl = `${getBaseUrl()}/save-cv`;
+      console.log(`[CV Upload ${i+1}/${count}] POST ${saveUrl}`, {file: file.name, folder, subfolder});
+
       try {
-        const r    = await fetch(`${getBaseUrl()}/save-cv`, {
+        const r = await fetch(saveUrl, {
           method: "POST",
           headers: {"ngrok-skip-browser-warning": "true"},
           body: fd,
         });
-        const data = await r.json();
+
+        // Always read as text first so we can log and handle non-JSON gracefully
+        const rawText = await r.text();
+        console.log(`[CV Upload ${i+1}/${count}] HTTP ${r.status} ${r.statusText}  body="${rawText.slice(0,200)}"`);
+
+        if (!r.ok) {
+          appendMessage("error",
+            `❌ ${file.name}: HTTP ${r.status} from /save-cv — "${rawText.slice(0,120)}"\n` +
+            (r.status === 404
+              ? "💡 Restart local_server.py — the running server may be an old version without /save-cv."
+              : "Check that local_server.py is running.")
+          );
+          continue;
+        }
+
+        let data;
+        try { data = JSON.parse(rawText); }
+        catch(_) {
+          appendMessage("error", `❌ ${file.name}: Server returned non-JSON — "${rawText.slice(0,120)}"`);
+          continue;
+        }
+
         if (data.status === "saved") {
           savedPaths.push(data.saved_to);
           appendMessage("agent", `✅ ${data.name} saved to ${data.folder}/${data.subfolder}`);
         } else {
-          appendMessage("error", `❌ ${file.name}: ${data.response || "Save failed"}`);
+          appendMessage("error", `❌ ${file.name}: ${data.response || JSON.stringify(data)}`);
         }
       } catch(e) {
-        appendMessage("error", `❌ ${file.name}: Network error — ${e.message}`);
+        console.error(`[CV Upload ${i+1}/${count}] Fetch error:`, e);
+        appendMessage("error", `❌ ${file.name}: Could not reach ${saveUrl}\n(${e.message})`);
       }
     }
 
@@ -1254,7 +1280,9 @@
 
     // ── Phase 2: background AI parsing ──────────────────────────────────────
     try {
-      const r = await fetch(`${getBaseUrl()}/start-parse`, {
+      const parseUrl = `${getBaseUrl()}/start-parse`;
+      console.log(`[CV Parse] POST ${parseUrl}`, {files: savedPaths});
+      const r = await fetch(parseUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1262,7 +1290,13 @@
         },
         body: JSON.stringify({files: savedPaths}),
       });
-      const job = await r.json();
+      const rawText = await r.text();
+      console.log(`[CV Parse] HTTP ${r.status}  body="${rawText.slice(0,200)}"`);
+      if (!r.ok) {
+        appendMessage("error", `⚠️ Could not start background parsing: HTTP ${r.status} — "${rawText.slice(0,120)}"`);
+        return;
+      }
+      const job = JSON.parse(rawText);
       if (job.job_id) pollParseJob(job.job_id, savedPaths.length);
     } catch(e) {
       appendMessage("error", `⚠️ Could not start background parsing: ${e.message}`);
@@ -1275,10 +1309,15 @@
 
     async function check() {
       try {
-        const r    = await fetch(`${getBaseUrl()}/parse-status/${jobId}`, {
-          headers: {"ngrok-skip-browser-warning": "true"},
-        });
-        const data = await r.json();
+        const pollUrl = `${getBaseUrl()}/parse-status/${jobId}`;
+        const r       = await fetch(pollUrl, {headers: {"ngrok-skip-browser-warning": "true"}});
+        const rawText = await r.text();
+        console.log(`[CV Poll] GET ${pollUrl} → HTTP ${r.status}  body="${rawText.slice(0,200)}"`);
+        if (!r.ok) {
+          progressBubble.textContent = `⚠️ Poll error: HTTP ${r.status} — "${rawText.slice(0,80)}"`;
+          return;
+        }
+        const data = JSON.parse(rawText);
         const prog = data.progress || 0;
 
         if (data.status === "running") {
