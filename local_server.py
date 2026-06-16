@@ -6,18 +6,19 @@ Usage:
   ngrok http 8080
 
 Endpoints:
-  POST /invocations    {"message": "..."}                   -> agent response JSON
-  POST /upload-cv      multipart: folder, subfolder, file   -> save file + process
-  GET  /health                                              -> {"status": "healthy"}
+  POST /invocations            {"message": "..."}              -> agent chat response
+  POST /save-cv                multipart: folder, subfolder, file -> save file, no AI
+  POST /start-parse            {"files": [...paths]}           -> start background AI parse
+  GET  /parse-status/{job_id}                                  -> poll parse job status
+  GET  /list-folders                                           -> list job folders on disk
+  GET  /health                                                 -> {"status": "healthy"}
 
-This file is intentionally standalone — it does NOT import main.py because
-GreenNodeAgentBaseApp crashes at import time on Windows cp1252 terminals.
-All agent logic (graph, tools, helpers) is reproduced here directly.
-main.py is kept unchanged for AgentBase cloud deployment.
+Standalone by design — does NOT import main.py because GreenNodeAgentBaseApp
+crashes on Windows cp1252 terminals at import time (rich printing ✓).
+main.py is kept for AgentBase cloud deployment only.
 """
 
 import asyncio
-import contextlib
 import json
 import os
 import re
@@ -33,7 +34,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from openpyxl import load_workbook
@@ -55,7 +56,6 @@ load_dotenv()
 JOBS_BASE_DIR = os.environ.get("JOBS_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 EXCEL_PATH    = os.environ.get("EXCEL_PATH", "")
 TA_INCHARGE   = os.environ.get("TA_INCHARGE") or os.environ.get("USERNAME", "Unknown")
-CV_POLL_INTERVAL = int(os.environ.get("CV_POLL_INTERVAL", "60"))
 PROCESSED_FILES_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "processed_cvs.json")
 
 JOB_SUB_FOLDERS = ["LinkedIn", "VNG Careers", "Referral", "TA Search", "Others"]
@@ -381,7 +381,7 @@ def _process_cv(file_path: str) -> dict:
     return result
 
 # ---------------------------------------------------------------------------
-# Skill 3 — Sync helpers (abbreviated — same logic as main.py)
+# Skill 3 — Sync helpers
 # ---------------------------------------------------------------------------
 def _row_key(row: dict) -> str:
     email = str(row.get("Email") or "").strip().lower()
@@ -447,24 +447,6 @@ def _update_team_row(row_number: int, changed_fields: dict):
     for field, vals in changed_fields.items():
         if field in headers:
             ws.cell(row=row_number, column=headers.index(field) + 1, value=vals["mine"])
-    wb.save(TEAM_EXCEL_PATH); wb.close()
-
-def _write_conflict_log(conflicts: list[dict]):
-    wb = _open_wb(TEAM_EXCEL_PATH)
-    if CONFLICT_SHEET not in wb.sheetnames:
-        ws_c = wb.create_sheet(CONFLICT_SHEET)
-        for col, h in enumerate(CONFLICT_LOG_COLUMNS, 1):
-            cell = ws_c.cell(row=1, column=col, value=h); cell.font = Font(bold=True)
-            cell.fill = PatternFill(fill_type="solid", fgColor="FFD700")
-    else:
-        ws_c = wb[CONFLICT_SHEET]
-    red = PatternFill(fill_type="solid", fgColor="FF6B6B"); next_row = ws_c.max_row + 1
-    for c in conflicts:
-        values = [c["timestamp"], c["email"], c["request_code"], c["candidate_name"],
-                  c["field"], c["my_value"], c["team_value"], c["my_ta"], c["team_ta"]]
-        for col, val in enumerate(values, 1):
-            ws_c.cell(row=next_row, column=col, value=val).fill = red
-        next_row += 1
     wb.save(TEAM_EXCEL_PATH); wb.close()
 
 def _get_changed_fields(my_row: dict, team_row: dict) -> dict:
@@ -793,7 +775,7 @@ async def handle_invocations(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "response": "Field 'message' is required."}, status_code=400)
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None, lambda: graph.invoke({"messages": [("user", message)]})
         )
@@ -807,68 +789,6 @@ async def handle_invocations(request: Request) -> JSONResponse:
             {"status": "error", "response": f"Agent error: {exc}", "timestamp": datetime.now().isoformat()},
             status_code=500,
         )
-
-
-async def handle_upload_cv(request: Request) -> JSONResponse:
-    try:
-        form = await request.form()
-    except Exception as exc:
-        return JSONResponse(
-            {"status": "error",
-             "response": f"Could not parse form data. Is python-multipart installed? ({exc})"},
-            status_code=400,
-        )
-
-    folder    = str(form.get("folder")    or "").strip()
-    subfolder = str(form.get("subfolder") or "").strip()
-    upload    = form.get("file")
-
-    if not folder or not subfolder or upload is None:
-        return JSONResponse(
-            {"status": "error", "response": "Fields 'folder', 'subfolder', and 'file' are all required."},
-            status_code=400,
-        )
-    if subfolder not in JOB_SUB_FOLDERS:
-        return JSONResponse(
-            {"status": "error", "response": f"'subfolder' must be one of: {', '.join(JOB_SUB_FOLDERS)}"},
-            status_code=400,
-        )
-
-    filename = Path(upload.filename).name
-    ext = Path(filename).suffix.lower()
-    if ext not in _ALLOWED_EXT:
-        return JSONResponse(
-            {"status": "error", "response": f"File type '{ext}' not supported. Use PDF or DOCX."},
-            status_code=400,
-        )
-
-    save_dir  = Path(JOBS_BASE_DIR) / folder / subfolder
-    save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / filename
-
-    contents = await upload.read()
-    with open(save_path, "wb") as fh:
-        fh.write(contents)
-
-    message = f"Process the CV file at: {save_path}"
-    try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, lambda: graph.invoke({"messages": [("user", message)]})
-        )
-        return JSONResponse({
-            "status": "success",
-            "response": linkify_paths(result["messages"][-1].content),
-            "saved_to": str(save_path),
-            "timestamp": datetime.now().isoformat(),
-        })
-    except Exception as exc:
-        return JSONResponse({
-            "status": "error",
-            "response": linkify_paths(f"CV saved to {save_path} but agent processing failed: {exc}"),
-            "saved_to": str(save_path),
-            "timestamp": datetime.now().isoformat(),
-        }, status_code=500)
 
 
 async def handle_health(request: Request) -> JSONResponse:
@@ -1016,14 +936,11 @@ async def handle_parse_status(request: Request) -> JSONResponse:
 app = Starlette(
     routes=[
         Route("/invocations",           handle_invocations,   methods=["POST"]),
-        # Phase-1/Phase-2 endpoints (new redesigned upload flow)
         Route("/save-cv",               handle_save_cv,       methods=["POST"]),
         Route("/start-parse",           handle_start_parse,   methods=["POST"]),
         Route("/parse-status/{job_id}", handle_parse_status,  methods=["GET"]),
-        # Legacy (kept for backward compat, superseded by /save-cv + /start-parse)
-        Route("/upload-cv",             handle_upload_cv,     methods=["POST"]),
         Route("/list-folders",          handle_list_folders,  methods=["GET"]),
-        Route("/health",                handle_health,         methods=["GET"]),
+        Route("/health",                handle_health,        methods=["GET"]),
     ],
     middleware=[
         Middleware(CORSMiddleware, allow_origins=["*"],

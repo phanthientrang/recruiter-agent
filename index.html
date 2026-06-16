@@ -921,22 +921,32 @@
 
   /* ─── Core send / receive ───────────────────────────────── */
 
+  async function fetchJSON(url, opts = {}) {
+    const res = await fetch(url, {
+      ...opts,
+      headers: {"ngrok-skip-browser-warning": "true", ...(opts.headers || {})},
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status} — ${text.slice(0, 120)}`);
+      err.status = res.status;
+      throw err;
+    }
+    try { return JSON.parse(text); }
+    catch(_) { throw new Error(`Non-JSON response: ${text.slice(0, 120)}`); }
+  }
+
   async function sendToAgent(message, displayMessage) {
     if (!requireEndpoint()) return;
     appendMessage("user", displayMessage || message);
     setDisabled(true);
     showTyping();
     try {
-      const res = await fetch(`${getBaseUrl()}/invocations`, {
+      const data = await fetchJSON(`${getBaseUrl()}/invocations`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "ngrok-skip-browser-warning": "true",
-        },
+        headers: {"Content-Type": "application/json"},
         body: JSON.stringify({message}),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
       hideTyping();
       appendMessage("agent", data.response ?? data.message ?? JSON.stringify(data));
     } catch(e) {
@@ -1042,10 +1052,7 @@
     document.getElementById("folder-datalist").innerHTML = "";
     if (!base) { document.getElementById("loading-folders").classList.add("hidden"); return; }
     try {
-      const res = await fetch(`${base}/list-folders`, {
-        headers: {"ngrok-skip-browser-warning": "true"}
-      });
-      const data = await res.json();
+      const data = await fetchJSON(`${base}/list-folders`);
       _knownFolders = data.folders || [];
       const dl = document.getElementById("folder-datalist");
       _knownFolders.forEach(f => {
@@ -1053,7 +1060,7 @@
         opt.value = f;
         dl.appendChild(opt);
       });
-    } catch(e) {
+    } catch(_) {
       _knownFolders = [];
     } finally {
       document.getElementById("loading-folders").classList.add("hidden");
@@ -1221,37 +1228,8 @@
       fd.append("subfolder", subfolder);
       fd.append("file",      file);
 
-      const saveUrl = `${getBaseUrl()}/save-cv`;
-      console.log(`[CV Upload ${i+1}/${count}] POST ${saveUrl}`, {file: file.name, folder, subfolder});
-
       try {
-        const r = await fetch(saveUrl, {
-          method: "POST",
-          headers: {"ngrok-skip-browser-warning": "true"},
-          body: fd,
-        });
-
-        // Always read as text first so we can log and handle non-JSON gracefully
-        const rawText = await r.text();
-        console.log(`[CV Upload ${i+1}/${count}] HTTP ${r.status} ${r.statusText}  body="${rawText.slice(0,200)}"`);
-
-        if (!r.ok) {
-          appendMessage("error",
-            `❌ ${file.name}: HTTP ${r.status} from /save-cv — "${rawText.slice(0,120)}"\n` +
-            (r.status === 404
-              ? "💡 Restart local_server.py — the running server may be an old version without /save-cv."
-              : "Check that local_server.py is running.")
-          );
-          continue;
-        }
-
-        let data;
-        try { data = JSON.parse(rawText); }
-        catch(_) {
-          appendMessage("error", `❌ ${file.name}: Server returned non-JSON — "${rawText.slice(0,120)}"`);
-          continue;
-        }
-
+        const data = await fetchJSON(`${getBaseUrl()}/save-cv`, {method: "POST", body: fd});
         if (data.status === "saved") {
           savedPaths.push(data.saved_to);
           appendMessage("agent", `✅ ${data.name} saved to ${data.folder}/${data.subfolder}`);
@@ -1259,8 +1237,10 @@
           appendMessage("error", `❌ ${file.name}: ${data.response || JSON.stringify(data)}`);
         }
       } catch(e) {
-        console.error(`[CV Upload ${i+1}/${count}] Fetch error:`, e);
-        appendMessage("error", `❌ ${file.name}: Could not reach ${saveUrl}\n(${e.message})`);
+        appendMessage("error",
+          `❌ ${file.name}: ${e.message}` +
+          (e.status === 404 ? "\n💡 Restart local_server.py — the running server may be an old version without /save-cv." : "")
+        );
       }
     }
 
@@ -1280,23 +1260,11 @@
 
     // ── Phase 2: background AI parsing ──────────────────────────────────────
     try {
-      const parseUrl = `${getBaseUrl()}/start-parse`;
-      console.log(`[CV Parse] POST ${parseUrl}`, {files: savedPaths});
-      const r = await fetch(parseUrl, {
+      const job = await fetchJSON(`${getBaseUrl()}/start-parse`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "ngrok-skip-browser-warning": "true",
-        },
+        headers: {"Content-Type": "application/json"},
         body: JSON.stringify({files: savedPaths}),
       });
-      const rawText = await r.text();
-      console.log(`[CV Parse] HTTP ${r.status}  body="${rawText.slice(0,200)}"`);
-      if (!r.ok) {
-        appendMessage("error", `⚠️ Could not start background parsing: HTTP ${r.status} — "${rawText.slice(0,120)}"`);
-        return;
-      }
-      const job = JSON.parse(rawText);
       if (job.job_id) pollParseJob(job.job_id, savedPaths.length);
     } catch(e) {
       appendMessage("error", `⚠️ Could not start background parsing: ${e.message}`);
@@ -1309,15 +1277,7 @@
 
     async function check() {
       try {
-        const pollUrl = `${getBaseUrl()}/parse-status/${jobId}`;
-        const r       = await fetch(pollUrl, {headers: {"ngrok-skip-browser-warning": "true"}});
-        const rawText = await r.text();
-        console.log(`[CV Poll] GET ${pollUrl} → HTTP ${r.status}  body="${rawText.slice(0,200)}"`);
-        if (!r.ok) {
-          progressBubble.textContent = `⚠️ Poll error: HTTP ${r.status} — "${rawText.slice(0,80)}"`;
-          return;
-        }
-        const data = JSON.parse(rawText);
+        const data = await fetchJSON(`${getBaseUrl()}/parse-status/${jobId}`);
         const prog = data.progress || 0;
 
         if (data.status === "running") {
