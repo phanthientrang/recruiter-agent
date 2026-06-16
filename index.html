@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Recruiter Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
+    /* ─── Reset ─────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       font-family: 'Inter', system-ui, sans-serif;
       background: #f0f2f5;
@@ -16,385 +16,970 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      overflow: hidden;
     }
 
-    .chat-container {
+    /* ─── App shell ──────────────────────────────────────────────────── */
+    .app {
       width: 100%;
       max-width: 800px;
       height: 100dvh;
       display: flex;
       flex-direction: column;
       background: #fff;
-      box-shadow: 0 0 40px rgba(0,0,0,.12);
+      box-shadow: 0 0 48px rgba(0,0,0,.13);
+      position: relative;
+    }
+    @media (min-width: 801px) {
+      body { padding: 20px; }
+      .app { height: calc(100dvh - 40px); border-radius: 16px; overflow: hidden; }
     }
 
-    /* ── Header ── */
+    /* ─── Header ─────────────────────────────────────────────────────── */
     .chat-header {
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      padding: 16px 20px;
+      padding: 14px 20px;
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
       flex-shrink: 0;
     }
-
-    .avatar {
-      width: 44px;
-      height: 44px;
+    .header-avatar {
+      width: 42px; height: 42px;
       border-radius: 50%;
-      background: rgba(255,255,255,.25);
+      background: rgba(255,255,255,.2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; flex-shrink: 0;
+    }
+    .header-info h1 { color: #fff; font-size: 15px; font-weight: 600; }
+    .header-info .status {
+      color: rgba(255,255,255,.8); font-size: 12px;
+      display: flex; align-items: center; gap: 5px; margin-top: 2px;
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; }
+
+    /* ─── Toolbar ────────────────────────────────────────────────────── */
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 10px 14px;
+      background: #fafafa;
+      border-bottom: 1px solid #e5e7eb;
+      flex-shrink: 0;
+    }
+    .tool-btn {
+      flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 22px;
-      flex-shrink: 0;
-    }
-
-    .header-info h1 {
-      color: #fff;
-      font-size: 16px;
+      gap: 6px;
+      padding: 9px 10px;
+      border: none;
+      border-radius: 10px;
+      font-family: inherit;
+      font-size: 13px;
       font-weight: 600;
-      line-height: 1.2;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s, box-shadow .15s;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .tool-btn:hover  { opacity: .88; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+    .tool-btn:active { transform: scale(.97); }
+    .btn-folder { background: linear-gradient(135deg, #10b981, #059669); }
+    .btn-upload { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+    .btn-sync   { background: linear-gradient(135deg, #f59e0b, #d97706); }
+    .tool-icon  { font-size: 16px; }
+    @media (max-width: 420px) {
+      .tool-label { display: none; }
+      .tool-icon  { font-size: 20px; }
+      .tool-btn   { padding: 10px; }
     }
 
-    .header-info .status {
-      color: rgba(255,255,255,.8);
-      font-size: 12px;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      margin-top: 2px;
-    }
-
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #4ade80;
-      flex-shrink: 0;
-    }
-
-    /* ── Messages area ── */
+    /* ─── Chat messages ──────────────────────────────────────────────── */
     .chat-messages {
       flex: 1;
       overflow-y: auto;
-      padding: 20px 16px;
+      padding: 18px 14px;
       display: flex;
       flex-direction: column;
       gap: 4px;
       scroll-behavior: smooth;
     }
-
     .chat-messages::-webkit-scrollbar { width: 4px; }
-    .chat-messages::-webkit-scrollbar-track { background: transparent; }
     .chat-messages::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
 
-    /* ── Message rows ── */
-    .message-row {
+    .msg-row {
       display: flex;
       flex-direction: column;
-      max-width: 78%;
+      max-width: 80%;
       animation: fadeUp .2s ease;
     }
-
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(6px); }
       to   { opacity: 1; transform: translateY(0); }
     }
+    .msg-row.user  { align-self: flex-end;   align-items: flex-end; }
+    .msg-row.agent { align-self: flex-start; align-items: flex-start; }
+    .msg-row.error { align-self: flex-start; align-items: flex-start; }
 
-    .message-row.user  { align-self: flex-end; align-items: flex-end; }
-    .message-row.agent { align-self: flex-start; align-items: flex-start; }
-    .message-row.error { align-self: flex-start; align-items: flex-start; }
-
-    /* Group spacing — consecutive same-sender messages get less gap */
-    .message-row + .message-row.user  { margin-top: 2px; }
-    .message-row + .message-row.agent { margin-top: 2px; }
-    .message-row.user  + .message-row.agent,
-    .message-row.agent + .message-row.user  { margin-top: 14px; }
-    .message-row.error + .message-row,
-    .message-row       + .message-row.error { margin-top: 14px; }
+    .msg-row.user  + .msg-row.agent,
+    .msg-row.agent + .msg-row.user  { margin-top: 14px; }
+    .msg-row.error + .msg-row,
+    .msg-row       + .msg-row.error { margin-top: 14px; }
 
     .bubble {
       padding: 10px 14px;
       border-radius: 18px;
-      font-size: 14.5px;
-      line-height: 1.55;
+      font-size: 14px;
+      line-height: 1.6;
       white-space: pre-wrap;
       word-break: break-word;
     }
-
-    .message-row.user  .bubble {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #fff;
-      border-bottom-right-radius: 4px;
+    .msg-row.user  .bubble {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: #fff; border-bottom-right-radius: 4px;
     }
-
-    .message-row.agent .bubble {
-      background: #f3f4f6;
-      color: #111827;
-      border-bottom-left-radius: 4px;
-      border: 1px solid #e5e7eb;
+    .msg-row.agent .bubble {
+      background: #f3f4f6; color: #111827;
+      border: 1px solid #e5e7eb; border-bottom-left-radius: 4px;
     }
-
-    .message-row.error .bubble {
-      background: #fef2f2;
-      color: #b91c1c;
-      border: 1px solid #fecaca;
-      border-bottom-left-radius: 4px;
+    .msg-row.error .bubble {
+      background: #fef2f2; color: #b91c1c;
+      border: 1px solid #fecaca; border-bottom-left-radius: 4px;
     }
+    .ts { font-size: 10px; color: #9ca3af; margin-top: 3px; padding: 0 4px; }
 
-    .timestamp {
-      font-size: 10.5px;
-      color: #9ca3af;
-      margin-top: 3px;
-      padding: 0 4px;
-    }
-
-    /* ── Typing indicator ── */
-    .typing-row {
-      display: flex;
-      align-self: flex-start;
-      margin-top: 14px;
-      animation: fadeUp .2s ease;
-    }
-
+    /* Typing dots */
+    .typing-row { align-self: flex-start; margin-top: 14px; animation: fadeUp .2s ease; }
     .typing-bubble {
-      background: #f3f4f6;
-      border: 1px solid #e5e7eb;
-      border-radius: 18px;
-      border-bottom-left-radius: 4px;
-      padding: 12px 16px;
-      display: flex;
-      align-items: center;
-      gap: 5px;
+      background: #f3f4f6; border: 1px solid #e5e7eb;
+      border-radius: 18px; border-bottom-left-radius: 4px;
+      padding: 12px 16px; display: flex; gap: 5px; align-items: center;
     }
-
     .typing-bubble span {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #9ca3af;
-      animation: bounce 1.2s infinite;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #9ca3af; animation: bounce 1.2s infinite;
     }
     .typing-bubble span:nth-child(2) { animation-delay: .2s; }
     .typing-bubble span:nth-child(3) { animation-delay: .4s; }
-
     @keyframes bounce {
-      0%, 60%, 100% { transform: translateY(0); }
-      30%           { transform: translateY(-6px); }
+      0%,60%,100% { transform: translateY(0); }
+      30%         { transform: translateY(-6px); }
     }
 
-    /* ── Input area ── */
-    .chat-input-area {
-      padding: 12px 16px;
+    /* ─── Input bar ──────────────────────────────────────────────────── */
+    .chat-input {
+      padding: 10px 14px;
       border-top: 1px solid #e5e7eb;
       background: #fff;
-      display: flex;
-      gap: 10px;
-      align-items: flex-end;
+      display: flex; gap: 8px; align-items: flex-end;
       flex-shrink: 0;
     }
-
-    #input {
-      flex: 1;
-      resize: none;
-      border: 1.5px solid #e5e7eb;
-      border-radius: 22px;
-      padding: 10px 16px;
-      font-family: inherit;
-      font-size: 14.5px;
-      color: #111827;
-      outline: none;
-      max-height: 140px;
-      overflow-y: auto;
-      line-height: 1.5;
+    #chat-textarea {
+      flex: 1; resize: none;
+      border: 1.5px solid #e5e7eb; border-radius: 22px;
+      padding: 9px 15px;
+      font-family: inherit; font-size: 14px; color: #111827;
+      outline: none; max-height: 130px; overflow-y: auto;
+      line-height: 1.5; background: #f9fafb;
       transition: border-color .15s;
-      background: #f9fafb;
     }
-
-    #input:focus { border-color: #667eea; background: #fff; }
-    #input:disabled { opacity: .6; cursor: not-allowed; }
-    #input::placeholder { color: #9ca3af; }
-
-    #send {
-      width: 42px;
-      height: 42px;
-      border-radius: 50%;
-      border: none;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #fff;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
+    #chat-textarea:focus { border-color: #667eea; background: #fff; }
+    #chat-textarea::placeholder { color: #9ca3af; }
+    #chat-textarea:disabled { opacity: .6; cursor: not-allowed; }
+    #send-btn {
+      width: 40px; height: 40px; border-radius: 50%; border: none;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: #fff; cursor: pointer; display: flex;
+      align-items: center; justify-content: center; flex-shrink: 0;
       transition: opacity .15s, transform .1s;
     }
+    #send-btn:hover:not(:disabled)  { opacity: .88; transform: scale(1.05); }
+    #send-btn:active:not(:disabled) { transform: scale(.95); }
+    #send-btn:disabled { opacity: .4; cursor: not-allowed; }
+    #send-btn svg { width: 17px; height: 17px; }
 
-    #send:hover:not(:disabled) { opacity: .9; transform: scale(1.05); }
-    #send:active:not(:disabled) { transform: scale(.95); }
-    #send:disabled { opacity: .45; cursor: not-allowed; transform: none; }
-
-    #send svg { width: 18px; height: 18px; }
-
-    /* ── Responsive ── */
-    @media (min-width: 801px) {
-      body { padding: 20px; }
-      .chat-container { height: calc(100dvh - 40px); border-radius: 16px; overflow: hidden; }
+    /* ─── Modal backdrop ─────────────────────────────────────────────── */
+    .backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.45);
+      z-index: 100;
+      display: none;
+      animation: fadeIn .18s ease;
     }
+    .backdrop.open { display: block; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    /* ─── Modal ──────────────────────────────────────────────────────── */
+    .modal {
+      position: fixed;
+      left: 50%; top: 50%;
+      transform: translate(-50%, -50%) scale(.96);
+      width: min(94vw, 480px);
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.2);
+      z-index: 101;
+      display: none;
+      flex-direction: column;
+      max-height: 90dvh;
+      animation: popIn .2s ease forwards;
+    }
+    .modal.open { display: flex; }
+    @keyframes popIn {
+      from { opacity: 0; transform: translate(-50%,-50%) scale(.93); }
+      to   { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+    }
+    .modal-sm { width: min(94vw, 380px); }
+
+    .modal-header {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid #f3f4f6;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .modal-header h2 { font-size: 16px; font-weight: 700; color: #111827; }
+    .modal-close {
+      width: 28px; height: 28px; border-radius: 50%; border: none;
+      background: #f3f4f6; cursor: pointer; font-size: 15px; color: #6b7280;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .15s;
+    }
+    .modal-close:hover { background: #e5e7eb; }
+
+    .modal-body {
+      padding: 18px 20px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .modal-footer {
+      padding: 14px 20px;
+      border-top: 1px solid #f3f4f6;
+      display: flex; gap: 8px; justify-content: flex-end;
+      flex-shrink: 0;
+    }
+
+    /* ─── Form elements ──────────────────────────────────────────────── */
+    .field { margin-bottom: 16px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label {
+      display: block; font-size: 12.5px; font-weight: 600;
+      color: #374151; margin-bottom: 6px; text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .field input[type="text"],
+    .field select,
+    .field textarea {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 9px;
+      font-family: inherit; font-size: 14px; color: #111827;
+      outline: none; background: #fff;
+      transition: border-color .15s;
+      appearance: none;
+    }
+    .field input:focus,
+    .field select:focus { border-color: #667eea; }
+    .field input::placeholder { color: #9ca3af; }
+    .hint { font-size: 12px; color: #6b7280; margin-top: 5px; }
+
+    /* Dept row */
+    .dept-row { display: flex; gap: 8px; }
+    .dept-row select { flex: 1; }
+    .dept-row input  { flex: 1; }
+
+    /* Folder name preview */
+    .folder-preview {
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px; color: #166534;
+      margin-top: 16px;
+    }
+    .folder-preview strong { word-break: break-all; }
+
+    /* ─── Radio group ────────────────────────────────────────────────── */
+    .radio-group { display: flex; flex-direction: column; gap: 8px; }
+    .radio-option {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 9px; cursor: pointer;
+      font-size: 14px; color: #374151;
+      transition: border-color .15s, background .15s;
+    }
+    .radio-option:hover { border-color: #667eea; background: #faf5ff; }
+    .radio-option input[type="radio"] { accent-color: #667eea; }
+    .radio-option.selected { border-color: #667eea; background: #f0f0fe; color: #4338ca; font-weight: 500; }
+
+    /* ─── Wizard steps ───────────────────────────────────────────────── */
+    .steps {
+      display: flex; align-items: center;
+      padding: 14px 20px 0;
+      flex-shrink: 0;
+    }
+    .step {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 4px; flex-shrink: 0;
+    }
+    .step span {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: #e5e7eb; color: #6b7280;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700;
+      transition: background .2s, color .2s;
+    }
+    .step-label { font-size: 11px; color: #9ca3af; transition: color .2s; }
+    .step.active span  { background: linear-gradient(135deg,#667eea,#764ba2); color: #fff; }
+    .step.active .step-label { color: #667eea; font-weight: 600; }
+    .step.done span  { background: #10b981; color: #fff; }
+    .step.done .step-label { color: #059669; }
+    .step-line { flex: 1; height: 2px; background: #e5e7eb; margin: 0 6px 14px; }
+
+    .wizard-step { display: none; }
+    .wizard-step.active { display: block; }
+
+    /* ─── File drop zone ─────────────────────────────────────────────── */
+    .file-drop {
+      border: 2px dashed #d1d5db;
+      border-radius: 12px;
+      padding: 28px 20px;
+      text-align: center; cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .file-drop:hover, .file-drop.drag-over {
+      border-color: #667eea; background: #faf5ff;
+    }
+    .file-drop-icon { font-size: 32px; margin-bottom: 8px; }
+    .file-drop-text { font-size: 14px; font-weight: 500; color: #374151; }
+    .file-drop-hint { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+
+    .file-info {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; margin-top: 10px;
+      background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 9px;
+      font-size: 13px; color: #166534;
+    }
+    .file-info-icon { font-size: 20px; }
+    .file-info-name { font-weight: 500; word-break: break-all; }
+    .file-info-size { color: #6b7280; font-size: 12px; }
+
+    .path-preview {
+      margin-top: 12px;
+      background: #f8fafc; border: 1px solid #e2e8f0;
+      border-radius: 8px; padding: 10px 12px;
+      font-size: 12px; color: #475569; font-family: monospace;
+      word-break: break-all;
+    }
+
+    /* ─── Sync modal ─────────────────────────────────────────────────── */
+    .sync-icon { font-size: 48px; text-align: center; margin-bottom: 14px; }
+    .sync-msg  { font-size: 15px; font-weight: 600; color: #111827; text-align: center; margin-bottom: 8px; }
+    .sync-hint { font-size: 13px; color: #6b7280; text-align: center; line-height: 1.5; }
+
+    /* ─── Buttons ────────────────────────────────────────────────────── */
+    .btn-cancel, .btn-primary {
+      padding: 9px 18px; border-radius: 9px; border: none;
+      font-family: inherit; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: opacity .15s, transform .1s;
+    }
+    .btn-cancel { background: #f3f4f6; color: #374151; }
+    .btn-cancel:hover { background: #e5e7eb; }
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: #fff;
+    }
+    .btn-primary:hover { opacity: .88; }
+    .btn-primary:active, .btn-cancel:active { transform: scale(.97); }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
-<div class="chat-container">
 
-  <div class="chat-header">
-    <div class="avatar">🤖</div>
+<!-- ═══════════════ APP ═══════════════ -->
+<div class="app">
+
+  <!-- Header -->
+  <header class="chat-header">
+    <div class="header-avatar">🤖</div>
     <div class="header-info">
       <h1>Recruiter Assistant</h1>
-      <div class="status">
-        <span class="status-dot"></span>
-        Online
-      </div>
+      <div class="status"><span class="status-dot"></span>Online</div>
     </div>
+  </header>
+
+  <!-- Quick-action toolbar -->
+  <div class="toolbar">
+    <button class="tool-btn btn-folder" onclick="openModal('folder')">
+      <span class="tool-icon">📁</span>
+      <span class="tool-label">Create Job Folder</span>
+    </button>
+    <button class="tool-btn btn-upload" onclick="openModal('upload')">
+      <span class="tool-icon">📄</span>
+      <span class="tool-label">Upload CV</span>
+    </button>
+    <button class="tool-btn btn-sync" onclick="openModal('sync')">
+      <span class="tool-icon">🔄</span>
+      <span class="tool-label">Sync Database</span>
+    </button>
   </div>
 
+  <!-- Messages -->
   <div class="chat-messages" id="messages"></div>
 
-  <div class="chat-input-area">
-    <textarea id="input" rows="1" placeholder="Type a message… (Enter to send, Shift+Enter for newline)"></textarea>
-    <button id="send" title="Send">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Input bar -->
+  <div class="chat-input">
+    <textarea id="chat-textarea" rows="1"
+      placeholder="Or type a message… (Enter to send)"></textarea>
+    <button id="send-btn" title="Send">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="22" y1="2" x2="11" y2="13"></line>
         <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
       </svg>
     </button>
   </div>
-
 </div>
 
+<!-- ═══════════════ BACKDROP ═══════════════ -->
+<div class="backdrop" id="backdrop" onclick="closeModal()"></div>
+
+<!-- ═══════════════ MODAL: Create Job Folder ═══════════════ -->
+<div class="modal" id="modal-folder">
+  <div class="modal-header">
+    <h2>📁 Create Job Folder</h2>
+    <button class="modal-close" onclick="closeModal()">✕</button>
+  </div>
+  <div class="modal-body">
+    <div class="field">
+      <label>Department</label>
+      <div class="dept-row">
+        <select id="dept-select" onchange="onDeptChange()">
+          <option value="">Select department…</option>
+          <option value="ZDA">ZDA</option>
+          <option value="ZCA">ZCA</option>
+          <option value="ZLA">ZLA</option>
+          <option value="ZMA">ZMA</option>
+          <option value="__custom__">Other (type below)…</option>
+        </select>
+        <input type="text" id="dept-custom" placeholder="Enter code"
+               class="hidden" oninput="updateFolderPreview()" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Position Name</label>
+      <input type="text" id="position-input"
+             placeholder="e.g. Data Scientist" oninput="updateFolderPreview()" />
+    </div>
+    <div class="field">
+      <label>Job Code</label>
+      <input type="text" id="jobcode-input"
+             placeholder="e.g. 26-ZDA-3117" oninput="updateFolderPreview()" />
+    </div>
+    <div class="folder-preview">
+      Folder name: <strong id="folder-preview-name">—</strong>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+    <button class="btn-primary" onclick="submitFolder()">📁 Create Folder</button>
+  </div>
+</div>
+
+<!-- ═══════════════ MODAL: Upload CV Wizard ═══════════════ -->
+<div class="modal" id="modal-upload">
+  <div class="modal-header">
+    <h2>📄 Upload CV</h2>
+    <button class="modal-close" onclick="closeModal()">✕</button>
+  </div>
+
+  <!-- Step indicators -->
+  <div class="steps" id="cv-steps">
+    <div class="step active" id="step-ind-1">
+      <span>1</span>
+      <div class="step-label">Job Folder</div>
+    </div>
+    <div class="step-line"></div>
+    <div class="step" id="step-ind-2">
+      <span>2</span>
+      <div class="step-label">Source</div>
+    </div>
+    <div class="step-line"></div>
+    <div class="step" id="step-ind-3">
+      <span>3</span>
+      <div class="step-label">CV File</div>
+    </div>
+  </div>
+
+  <div class="modal-body">
+    <!-- Step 1: Job Folder -->
+    <div class="wizard-step active" id="cv-step-1">
+      <div class="field">
+        <label>Job Folder Name</label>
+        <input type="text" id="cv-folder-input"
+               placeholder="e.g. ZDA - Data Scientist - 26-ZDA-3117" />
+        <div class="hint">Format: [Department] - [Position] - [Job Code]</div>
+      </div>
+    </div>
+
+    <!-- Step 2: Sub-folder / Source -->
+    <div class="wizard-step" id="cv-step-2">
+      <div class="field">
+        <label>Candidate Source</label>
+        <div class="radio-group" id="subfolder-group">
+          <label class="radio-option" onclick="selectSubfolder(this, 'LinkedIn')">
+            <input type="radio" name="subfolder" value="LinkedIn" />
+            🔗 LinkedIn
+          </label>
+          <label class="radio-option" onclick="selectSubfolder(this, 'VNG Careers')">
+            <input type="radio" name="subfolder" value="VNG Careers" />
+            🏢 VNG Careers
+          </label>
+          <label class="radio-option" onclick="selectSubfolder(this, 'Referral')">
+            <input type="radio" name="subfolder" value="Referral" />
+            🤝 Referral
+          </label>
+          <label class="radio-option" onclick="selectSubfolder(this, 'TA Search')">
+            <input type="radio" name="subfolder" value="TA Search" />
+            🔍 TA Search
+          </label>
+          <label class="radio-option" onclick="selectSubfolder(this, 'Others')">
+            <input type="radio" name="subfolder" value="Others" />
+            📌 Others
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: CV File -->
+    <div class="wizard-step" id="cv-step-3">
+      <div class="field">
+        <label>CV File</label>
+        <div class="file-drop" id="file-drop"
+             onclick="document.getElementById('cv-file-input').click()"
+             ondragover="onDragOver(event)" ondrop="onDrop(event)"
+             ondragleave="onDragLeave()">
+          <div class="file-drop-icon">📄</div>
+          <div class="file-drop-text">Click to select file</div>
+          <div class="file-drop-hint">PDF, DOC, DOCX · or drag & drop</div>
+          <input type="file" id="cv-file-input"
+                 accept=".pdf,.doc,.docx"
+                 style="display:none" onchange="onFileSelect()" />
+        </div>
+        <div class="file-info hidden" id="file-info">
+          <span class="file-info-icon">📄</span>
+          <div>
+            <div class="file-info-name" id="file-info-name"></div>
+            <div class="file-info-size" id="file-info-size"></div>
+          </div>
+        </div>
+      </div>
+      <div class="path-preview hidden" id="path-preview">
+        <strong>Path the agent will process:</strong><br>
+        <span id="path-preview-text"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-footer">
+    <button class="btn-cancel hidden" id="cv-back-btn" onclick="cvBack()">← Back</button>
+    <button class="btn-cancel" id="cv-cancel-btn" onclick="closeModal()">Cancel</button>
+    <button class="btn-primary" id="cv-next-btn" onclick="cvNext()">Next →</button>
+  </div>
+</div>
+
+<!-- ═══════════════ MODAL: Sync Confirmation ═══════════════ -->
+<div class="modal modal-sm" id="modal-sync">
+  <div class="modal-header">
+    <h2>🔄 Sync Database</h2>
+    <button class="modal-close" onclick="closeModal()">✕</button>
+  </div>
+  <div class="modal-body" style="padding-top:24px; padding-bottom:24px;">
+    <div class="sync-icon">🔄</div>
+    <p class="sync-msg">Sync your recruitment database<br>with the team file?</p>
+    <p class="sync-hint" style="margin-top:8px;">
+      This will push today's new entries and any updates
+      to the shared team database, and log any conflicts.
+    </p>
+  </div>
+  <div class="modal-footer">
+    <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+    <button class="btn-primary" onclick="submitSync()"
+            style="background:linear-gradient(135deg,#f59e0b,#d97706);">
+      🔄 Sync Now
+    </button>
+  </div>
+</div>
+
+<!-- ═══════════════ SCRIPT ═══════════════ -->
 <script>
   const ENDPOINT = "https://endpoint-8c052130-5efa-49bd-92b9-a38678d2db75.agentbase-runtime.aiplatform.vngcloud.vn/invocations";
 
   const messagesEl = document.getElementById("messages");
-  const inputEl    = document.getElementById("input");
-  const sendBtn    = document.getElementById("send");
+  const textarea   = document.getElementById("chat-textarea");
+  const sendBtn    = document.getElementById("send-btn");
+  const backdrop   = document.getElementById("backdrop");
 
-  let busy = false;
-  let typingEl = null;
+  let busy        = false;
+  let typingEl    = null;
+  let activeModal = null;
+  let cvStep      = 1;
+  let selectedSubfolder = null;
+  let selectedFile      = null;
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  /* ─── Chat helpers ──────────────────────────────────────── */
 
   function now() {
-    return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
   }
 
   function appendMessage(role, text) {
-    const row = document.createElement("div");
-    row.className = `message-row ${role}`;
-
-    const bubble = document.createElement("div");
+    const row    = document.createElement("div");
+    row.className = `msg-row ${role}`;
+    const bubble  = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = text;
-
     const ts = document.createElement("div");
-    ts.className = "timestamp";
+    ts.className = "ts";
     ts.textContent = now();
-
     row.appendChild(bubble);
     row.appendChild(ts);
     messagesEl.appendChild(row);
-    scrollToBottom();
+    scrollBottom();
+    return row;
   }
 
   function showTyping() {
     typingEl = document.createElement("div");
     typingEl.className = "typing-row";
-    typingEl.innerHTML = `
-      <div class="typing-bubble">
-        <span></span><span></span><span></span>
-      </div>`;
+    typingEl.innerHTML = `<div class="typing-bubble">
+      <span></span><span></span><span></span></div>`;
     messagesEl.appendChild(typingEl);
-    scrollToBottom();
+    scrollBottom();
   }
 
   function hideTyping() {
     if (typingEl) { typingEl.remove(); typingEl = null; }
   }
 
-  function scrollToBottom() {
+  function scrollBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   function setDisabled(state) {
     busy = state;
-    inputEl.disabled = state;
-    sendBtn.disabled = state;
+    textarea.disabled = state;
+    sendBtn.disabled  = state;
   }
 
-  // Auto-resize textarea
-  inputEl.addEventListener("input", () => {
-    inputEl.style.height = "auto";
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
-  });
+  /* ─── Core send / receive ───────────────────────────────── */
 
-  // ── Send ─────────────────────────────────────────────────────────────────
-
-  async function sendMessage() {
-    const text = inputEl.value.trim();
-    if (!text || busy) return;
-
-    appendMessage("user", text);
-    inputEl.value = "";
-    inputEl.style.height = "auto";
+  async function sendToAgent(message, displayMessage) {
+    const shown = displayMessage || message;
+    appendMessage("user", shown);
     setDisabled(true);
     showTyping();
-
     try {
       const res = await fetch(ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text })
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({message})
       });
-
-      if (!res.ok) {
-        const err = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}${err ? ": " + err : ""}`);
-      }
-
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       hideTyping();
-      const reply = data.response ?? data.message ?? JSON.stringify(data);
-      appendMessage("agent", reply);
-
-    } catch (e) {
+      appendMessage("agent", data.response ?? data.message ?? JSON.stringify(data));
+    } catch(e) {
       hideTyping();
       appendMessage("error", "Could not reach the agent. Please try again.\n(" + e.message + ")");
     } finally {
       setDisabled(false);
-      inputEl.focus();
+      textarea.focus();
     }
   }
 
-  // Enter = send, Shift+Enter = newline
-  inputEl.addEventListener("keydown", e => {
+  /* ─── Chat textarea ─────────────────────────────────────── */
+
+  textarea.addEventListener("input", () => {
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 130) + "px";
+  });
+
+  textarea.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
+      e.preventDefault(); chatSend();
     }
   });
 
-  sendBtn.addEventListener("click", sendMessage);
+  sendBtn.addEventListener("click", chatSend);
 
-  // ── Welcome message ───────────────────────────────────────────────────────
+  function chatSend() {
+    const text = textarea.value.trim();
+    if (!text || busy) return;
+    textarea.value = "";
+    textarea.style.height = "auto";
+    sendToAgent(text);
+  }
+
+  /* ─── Modal management ──────────────────────────────────── */
+
+  function openModal(name) {
+    closeModal();
+    activeModal = name;
+    backdrop.classList.add("open");
+    document.getElementById("modal-" + name).classList.add("open");
+    if (name === "upload") resetCvWizard();
+  }
+
+  function closeModal() {
+    if (!activeModal) return;
+    backdrop.classList.remove("open");
+    document.getElementById("modal-" + activeModal).classList.remove("open");
+    activeModal = null;
+  }
+
+  /* ─── Modal 1: Create Job Folder ───────────────────────── */
+
+  function onDeptChange() {
+    const sel    = document.getElementById("dept-select");
+    const custom = document.getElementById("dept-custom");
+    if (sel.value === "__custom__") {
+      custom.classList.remove("hidden");
+      custom.focus();
+    } else {
+      custom.classList.add("hidden");
+      custom.value = "";
+    }
+    updateFolderPreview();
+  }
+
+  function getDept() {
+    const sel = document.getElementById("dept-select");
+    if (sel.value === "__custom__") {
+      return document.getElementById("dept-custom").value.trim();
+    }
+    return sel.value;
+  }
+
+  function updateFolderPreview() {
+    const dept     = getDept();
+    const position = document.getElementById("position-input").value.trim();
+    const jobcode  = document.getElementById("jobcode-input").value.trim();
+    const parts    = [dept, position, jobcode].filter(Boolean);
+    document.getElementById("folder-preview-name").textContent =
+      parts.length ? parts.join(" - ") : "—";
+  }
+
+  function submitFolder() {
+    const dept     = getDept();
+    const position = document.getElementById("position-input").value.trim();
+    const jobcode  = document.getElementById("jobcode-input").value.trim();
+
+    if (!dept || !position || !jobcode) {
+      alert("Please fill in all three fields.");
+      return;
+    }
+
+    const folderName = `${dept} - ${position} - ${jobcode}`;
+    closeModal();
+    sendToAgent(
+      `Create a job folder named "${folderName}"`,
+      `📁 Create job folder: ${folderName}`
+    );
+    // Reset form
+    document.getElementById("dept-select").value = "";
+    document.getElementById("dept-custom").value = "";
+    document.getElementById("position-input").value = "";
+    document.getElementById("jobcode-input").value = "";
+    document.getElementById("folder-preview-name").textContent = "—";
+    document.getElementById("dept-custom").classList.add("hidden");
+  }
+
+  /* ─── Modal 2: Upload CV Wizard ─────────────────────────── */
+
+  function resetCvWizard() {
+    cvStep = 1;
+    selectedSubfolder = null;
+    selectedFile      = null;
+
+    // Reset step indicators
+    [1,2,3].forEach(n => {
+      const el = document.getElementById("step-ind-" + n);
+      el.classList.remove("active","done");
+    });
+    document.getElementById("step-ind-1").classList.add("active");
+
+    // Reset wizard step panels
+    [1,2,3].forEach(n => {
+      const el = document.getElementById("cv-step-" + n);
+      el.classList.toggle("active", n === 1);
+    });
+
+    // Reset radio buttons
+    document.querySelectorAll("#subfolder-group .radio-option")
+      .forEach(el => el.classList.remove("selected"));
+    document.querySelectorAll("#subfolder-group input[type=radio]")
+      .forEach(el => el.checked = false);
+
+    // Reset file info
+    document.getElementById("cv-folder-input").value = "";
+    document.getElementById("cv-file-input").value   = "";
+    document.getElementById("file-info").classList.add("hidden");
+    document.getElementById("file-drop").classList.remove("hidden");
+    document.getElementById("path-preview").classList.add("hidden");
+
+    // Reset footer buttons
+    document.getElementById("cv-back-btn").classList.add("hidden");
+    document.getElementById("cv-cancel-btn").classList.remove("hidden");
+    document.getElementById("cv-next-btn").textContent = "Next →";
+  }
+
+  function selectSubfolder(labelEl, value) {
+    document.querySelectorAll("#subfolder-group .radio-option")
+      .forEach(el => el.classList.remove("selected"));
+    labelEl.classList.add("selected");
+    selectedSubfolder = value;
+    labelEl.querySelector("input").checked = true;
+  }
+
+  function cvNext() {
+    if (cvStep === 1) {
+      const folder = document.getElementById("cv-folder-input").value.trim();
+      if (!folder) { alert("Please enter the job folder name."); return; }
+      goCvStep(2);
+    } else if (cvStep === 2) {
+      if (!selectedSubfolder) { alert("Please select a candidate source."); return; }
+      goCvStep(3);
+    } else if (cvStep === 3) {
+      submitCv();
+    }
+  }
+
+  function cvBack() {
+    if (cvStep > 1) goCvStep(cvStep - 1);
+  }
+
+  function goCvStep(target) {
+    // Update step panel
+    document.getElementById("cv-step-" + cvStep).classList.remove("active");
+    document.getElementById("cv-step-" + target).classList.add("active");
+
+    // Update indicators
+    const prev = document.getElementById("step-ind-" + cvStep);
+    const next = document.getElementById("step-ind-" + target);
+    prev.classList.remove("active");
+    if (target > cvStep) prev.classList.add("done");
+    else prev.classList.remove("done");
+    next.classList.remove("done");
+    next.classList.add("active");
+
+    cvStep = target;
+
+    // Footer buttons
+    document.getElementById("cv-back-btn").classList.toggle("hidden", cvStep === 1);
+    document.getElementById("cv-next-btn").textContent = (cvStep === 3) ? "✓ Submit" : "Next →";
+  }
+
+  function onFileSelect() {
+    const input = document.getElementById("cv-file-input");
+    if (!input.files.length) return;
+    selectedFile = input.files[0];
+    showFileInfo(selectedFile);
+  }
+
+  function showFileInfo(file) {
+    document.getElementById("file-drop").classList.add("hidden");
+    const infoEl = document.getElementById("file-info");
+    infoEl.classList.remove("hidden");
+    document.getElementById("file-info-name").textContent = file.name;
+    document.getElementById("file-info-size").textContent = formatBytes(file.size);
+
+    updatePathPreview();
+  }
+
+  function updatePathPreview() {
+    if (!selectedFile) return;
+    const folder    = document.getElementById("cv-folder-input").value.trim();
+    const subfolder = selectedSubfolder || "";
+    const filename  = selectedFile.name;
+    const path      = [folder, subfolder, filename].filter(Boolean).join(" \\ ");
+
+    const previewEl = document.getElementById("path-preview");
+    document.getElementById("path-preview-text").textContent = path;
+    previewEl.classList.remove("hidden");
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  /* Drag & drop */
+  function onDragOver(e) {
+    e.preventDefault();
+    document.getElementById("file-drop").classList.add("drag-over");
+  }
+  function onDragLeave() {
+    document.getElementById("file-drop").classList.remove("drag-over");
+  }
+  function onDrop(e) {
+    e.preventDefault();
+    document.getElementById("file-drop").classList.remove("drag-over");
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    const allowed = [".pdf", ".doc", ".docx"];
+    const ext = "." + file.name.split(".").pop().toLowerCase();
+    if (!allowed.includes(ext)) { alert("Please drop a PDF, DOC, or DOCX file."); return; }
+    selectedFile = file;
+    showFileInfo(file);
+  }
+
+  function submitCv() {
+    if (!selectedFile) { alert("Please select a CV file."); return; }
+    const folder    = document.getElementById("cv-folder-input").value.trim();
+    const subfolder = selectedSubfolder;
+    const filename  = selectedFile.name;
+
+    const agentMsg =
+      `Process the CV file for the following candidate:\n` +
+      `- Job folder: ${folder}\n` +
+      `- Source: ${subfolder}\n` +
+      `- File: ${filename}\n\n` +
+      `Full path to process: ${folder}\\${subfolder}\\${filename}`;
+
+    const displayMsg = `📄 Upload CV: ${filename}\nJob: ${folder} › ${subfolder}`;
+
+    closeModal();
+    sendToAgent(agentMsg, displayMsg);
+  }
+
+  /* ─── Modal 3: Sync ─────────────────────────────────────── */
+
+  function submitSync() {
+    closeModal();
+    sendToAgent(
+      "Run the database sync now",
+      "🔄 Sync database with team file"
+    );
+  }
+
+  /* ─── Welcome message ───────────────────────────────────── */
   appendMessage("agent",
-    "Hi! I'm your Recruiter Assistant. I can help you:\n" +
-    "• Create job folders  📁\n" +
-    "• Process CV files and add candidates to the database  📄\n" +
-    "• Sync your database with the team  🔄\n\n" +
-    "What would you like to do today?"
+    "Hi! I'm your Recruiter Assistant. Use the buttons above to:\n\n" +
+    "📁  Create a job folder with standard sub-folders\n" +
+    "📄  Process a CV and add the candidate to your database\n" +
+    "🔄  Sync your database with the team file\n\n" +
+    "Or just type a message below to ask me anything."
   );
 
-  inputEl.focus();
+  textarea.focus();
 </script>
 </body>
 </html>
