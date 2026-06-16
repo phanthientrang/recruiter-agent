@@ -464,6 +464,11 @@
       transition: border-color .15s, background .15s;
     }
     .folder-refresh:hover { border-color: #667eea; background: #faf5ff; color: #667eea; }
+    .folder-exists-note {
+      margin-top: 6px; padding: 8px 10px;
+      background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 7px;
+      font-size: 12px; color: #166534; line-height: 1.5;
+    }
     .new-folder-note {
       margin-top: 6px; padding: 8px 10px;
       background: #fffbeb; border: 1px solid #fde68a; border-radius: 7px;
@@ -670,8 +675,11 @@
           <button class="folder-refresh" onclick="loadFolders()" title="Refresh folder list">↻</button>
         </div>
         <div class="hint">Format: [Department] - [Position] - [Job Code]</div>
+        <div class="folder-exists-note hidden" id="folder-exists-note">
+          ✅ Folder exists — CV will be added to this folder.
+        </div>
         <div class="new-folder-note hidden" id="new-folder-note">
-          ⚠ This folder doesn't exist yet — it will be created automatically when the CV is uploaded.
+          ⚠️ New folder will be created automatically when the CV is uploaded.
         </div>
         <div class="loading-folders hidden" id="loading-folders">Loading folders…</div>
       </div>
@@ -1053,8 +1061,11 @@
   }
 
   function onFolderInput() {
-    const val = document.getElementById("cv-folder-input").value.trim();
-    const isNew = val.length > 0 && !_knownFolders.includes(val);
+    const val      = document.getElementById("cv-folder-input").value.trim();
+    const loaded   = _knownFolders.length > 0;           // only classify once server list is known
+    const exists   = loaded && _knownFolders.includes(val);
+    const isNew    = loaded && val.length > 0 && !exists;
+    document.getElementById("folder-exists-note").classList.toggle("hidden", !exists);
     document.getElementById("new-folder-note").classList.toggle("hidden", !isNew);
   }
 
@@ -1071,6 +1082,7 @@
     document.getElementById("file-info").classList.add("hidden");
     document.getElementById("file-drop").classList.remove("hidden");
     document.getElementById("path-preview").classList.add("hidden");
+    document.getElementById("folder-exists-note").classList.add("hidden");
     document.getElementById("new-folder-note").classList.add("hidden");
     const fl = document.getElementById("file-list");
     fl.innerHTML = ""; fl.classList.add("hidden");
