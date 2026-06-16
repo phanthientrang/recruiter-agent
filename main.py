@@ -20,6 +20,8 @@ from openpyxl.styles import Font, PatternFill
 from pydantic import BaseModel
 
 from greennode_agentbase import GreenNodeAgentBaseApp, RequestContext, PingStatus
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
@@ -826,7 +828,17 @@ async def _lifespan(app_instance):
 # ---------------------------------------------------------------------------
 # App + LLM
 # ---------------------------------------------------------------------------
-app = GreenNodeAgentBaseApp(lifespan=_lifespan)
+app = GreenNodeAgentBaseApp(
+    lifespan=_lifespan,
+    middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["POST", "OPTIONS"],
+            allow_headers=["*"],
+        )
+    ],
+)
 
 LLM_MODEL = os.environ.get("LLM_MODEL", "")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")
