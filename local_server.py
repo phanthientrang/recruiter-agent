@@ -26,6 +26,7 @@ import subprocess
 import threading
 import unicodedata
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional, TypedDict
@@ -86,7 +87,35 @@ CONFLICT_LOG_COLUMNS = [
     "Field", "My value", "Team value", "My TA", "Team TA",
 ]
 
-_alerts: list[dict] = []
+_DATA_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+ALERTS_PATH  = os.path.join(_DATA_DIR, "alerts.json")
+
+os.makedirs(_DATA_DIR, exist_ok=True)
+
+def _load_alerts() -> list[dict]:
+    try:
+        with open(ALERTS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def _save_alerts() -> None:
+    with open(ALERTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(_alerts, f, ensure_ascii=False, indent=2, default=str)
+
+def _alert_push(alert: dict) -> None:
+    _alerts.append(alert)
+    _save_alerts()
+
+def _alert_remove(item: dict) -> None:
+    _alerts.remove(item)
+    _save_alerts()
+
+def _alert_clear() -> None:
+    _alerts.clear()
+    _save_alerts()
+
+_alerts: list[dict] = _load_alerts()
 
 # ---------------------------------------------------------------------------
 # LLM
@@ -463,19 +492,19 @@ def _process_cv(file_path: str) -> dict:
         text = _extract_cv_text(file_path)
     except Exception as e:
         result.update(status="error", messages=[f"Cannot extract text: {e}"])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()}); return result
+        _alert_push({**result, "timestamp": datetime.now().isoformat()}); return result
     if not text.strip():
         result.update(status="error", messages=["CV appears empty or image-only."])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()}); return result
+        _alert_push({**result, "timestamp": datetime.now().isoformat()}); return result
     folder = _parse_folder_path(file_path)
     if not folder:
         result.update(status="error", messages=["Could not parse folder path. Expected: [Dept] - [Position] - [JobCode]/[SubFolder]/file"])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()}); return result
+        _alert_push({**result, "timestamp": datetime.now().isoformat()}); return result
     try:
         cv = _parse_cv_with_llm(text)
     except Exception as e:
         result.update(status="error", messages=[f"LLM extraction failed: {e}"])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()}); return result
+        _alert_push({**result, "timestamp": datetime.now().isoformat()}); return result
     missing = [label for label, val in [
         ("Candidate name", cv.full_name), ("Email", cv.email), ("Phone", cv.phone),
         ("Latest company", cv.current_company), ("Latest position", cv.current_title),
@@ -490,7 +519,7 @@ def _process_cv(file_path: str) -> dict:
                 f"in row {dup['row_number']} for {folder['request_code']}. "
                 "Use resolve_duplicate to keep or overwrite."
             ])
-            _alerts.append({**result, "timestamp": datetime.now().isoformat(),
+            _alert_push({**result, "timestamp": datetime.now().isoformat(),
                 "file_path": os.path.normpath(file_path), "cv_fields": cv.model_dump(),
                 "folder_info": folder, "duplicate_row": dup["row_number"]})
             _mark_processed(file_path); return result
@@ -502,7 +531,7 @@ def _process_cv(file_path: str) -> dict:
                 f"in your pipeline for another role ({codes}). "
                 "Use resolve_cross_role to add a new row or skip."
             ])
-            _alerts.append({**result, "timestamp": datetime.now().isoformat(),
+            _alert_push({**result, "timestamp": datetime.now().isoformat(),
                 "file_path": os.path.normpath(file_path), "cv_fields": cv.model_dump(),
                 "folder_info": folder, "existing_roles": [r["request_code"] for r in cross_role]})
             _mark_processed(file_path); return result
@@ -520,7 +549,7 @@ def _process_cv(file_path: str) -> dict:
     else:
         result.update(status="no_excel")
         result["messages"].append("EXCEL_PATH not set - candidate NOT written to database.")
-    _alerts.append({**result, "timestamp": datetime.now().isoformat()})
+    _alert_push({**result, "timestamp": datetime.now().isoformat()})
     _mark_processed(file_path)
     return result
 
@@ -637,7 +666,7 @@ def _run_sync() -> dict:
     if not to_sync:
         _save_sync_state(personal_rows)
         summary = f"Daily sync {today}: No changes to sync today."
-        _alerts.append({"status": "sync_complete", "messages": [summary],
+        _alert_push({"status": "sync_complete", "messages": [summary],
                         "timestamp": result["timestamp"], "details": result}); return result
     locked = False
     for my_row in to_sync:
@@ -655,7 +684,7 @@ def _run_sync() -> dict:
                 if cross_ta:
                     codes = ", ".join(e["request_code"] for e in cross_ta)
                     tas   = ", ".join(sorted(set(e["team_ta_display"] for e in cross_ta)))
-                    _alerts.append({"status": "sync_cross_ta_pending", "timestamp": datetime.now().isoformat(),
+                    _alert_push({"status": "sync_cross_ta_pending", "timestamp": datetime.now().isoformat(),
                         "email": email, "request_code": request_code, "candidate_name": candidate_name,
                         "team_ta": tas, "row_data": serialized_row,
                         "messages": [f"Cross-TA: {candidate_name} ({email}) applying across team - "
@@ -670,7 +699,7 @@ def _run_sync() -> dict:
                 team_ta = str(team_row.get("TA Incharge") or "").strip().lower()
                 my_ta   = (TA_INCHARGE or "").lower().strip()
                 if team_ta != my_ta:
-                    _alerts.append({"status": "sync_conflict_pending", "timestamp": datetime.now().isoformat(),
+                    _alert_push({"status": "sync_conflict_pending", "timestamp": datetime.now().isoformat(),
                         "email": email, "request_code": request_code, "candidate_name": candidate_name,
                         "team_ta": str(team_row.get("TA Incharge") or ""), "row_data": serialized_row,
                         "messages": [f"Sync conflict: {candidate_name} ({email}) for {request_code} - "
@@ -682,7 +711,7 @@ def _run_sync() -> dict:
         except PermissionError:
             msg = "Team database is currently open by another user. Please close it and try again."
             result["errors"].append(msg)
-            _alerts.append({"status": "sync_error", "messages": [msg], "timestamp": datetime.now().isoformat()})
+            _alert_push({"status": "sync_error", "messages": [msg], "timestamp": datetime.now().isoformat()})
             locked = True
         except Exception as e:
             result["errors"].append(f"{candidate_name} ({email}): {e}")
@@ -690,7 +719,7 @@ def _run_sync() -> dict:
     summary = (f"Daily sync {today}: {result['added']} added, {result['updated']} updated, "
                f"{result['skipped']} skipped, {result['conflicts']} pending conflicts.")
     if result["errors"]: summary += f" {len(result['errors'])} error(s)."
-    _alerts.append({"status": "sync_complete", "messages": [summary],
+    _alert_push({"status": "sync_complete", "messages": [summary],
                     "timestamp": result["timestamp"], "details": result})
     return result
 
@@ -736,7 +765,7 @@ def get_alerts() -> str:
 @tool
 def clear_alerts() -> str:
     """Clear all pending alerts."""
-    _alerts.clear(); return "All alerts cleared."
+    _alert_clear(); return "All alerts cleared."
 
 @tool
 def resolve_duplicate(email: str, request_code: str, action: str) -> str:
@@ -754,12 +783,12 @@ def resolve_duplicate(email: str, request_code: str, action: str) -> str:
     name = pending["cv_fields"].get("full_name") or "Unknown"
     row_num = pending["duplicate_row"]
     if action.lower() == "keep":
-        _alerts.remove(pending); return f"Kept existing row {row_num} for {name}. No changes made."
+        _alert_remove(pending); return f"Kept existing row {row_num} for {name}. No changes made."
     if action.lower() == "overwrite":
         row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_info"], pending["file_path"])
         try: _overwrite_row(row_num, row_data)
         except Exception as e: return f"Overwrite failed: {e}"
-        _alerts.remove(pending); return f"Overwrote row {row_num} with updated data for {name}."
+        _alert_remove(pending); return f"Overwrote row {row_num} with updated data for {name}."
     return "Invalid action. Use 'keep' or 'overwrite'."
 
 @tool
@@ -777,12 +806,12 @@ def resolve_cross_role(email: str, new_request_code: str, action: str) -> str:
     if not pending: return f"No pending cross-role alert for '{email}' / '{new_request_code}'."
     name = pending["cv_fields"].get("full_name") or "Unknown"
     if action.lower() == "skip":
-        _alerts.remove(pending); return f"Skipped adding {name} for {new_request_code}. No changes made."
+        _alert_remove(pending); return f"Skipped adding {name} for {new_request_code}. No changes made."
     if action.lower() == "add":
         row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_info"], pending["file_path"])
         try: new_row = _add_row(row_data)
         except Exception as e: return f"Failed to add row: {e}"
-        _alerts.remove(pending); return f"Added {name} for {new_request_code} at row {new_row}."
+        _alert_remove(pending); return f"Added {name} for {new_request_code} at row {new_row}."
     return "Invalid action. Use 'add' or 'skip'."
 
 @tool
@@ -800,13 +829,13 @@ def resolve_sync_conflict(email: str, request_code: str, action: str) -> str:
     if not pending: return f"No pending sync conflict for '{email}' / '{request_code}'."
     candidate_name = pending.get("candidate_name") or "Unknown"
     if action.lower() == "skip":
-        _alerts.remove(pending); return f"Skipped syncing {candidate_name} ({email}) for {request_code}. Team DB unchanged."
+        _alert_remove(pending); return f"Skipped syncing {candidate_name} ({email}) for {request_code}. Team DB unchanged."
     if action.lower() == "add_new":
         row_data = {k: v for k, v in pending["row_data"].items() if v is not None}
         try: new_row = _add_team_row(row_data)
         except PermissionError: return "Team database is currently open by another user."
         except Exception as e: return f"Failed to add row: {e}"
-        _alerts.remove(pending); return f"Added {candidate_name} as new row {new_row} in team database."
+        _alert_remove(pending); return f"Added {candidate_name} as new row {new_row} in team database."
     return "Invalid action. Use 'skip' or 'add_new'."
 
 @tool
@@ -871,7 +900,14 @@ Sync workflow:
   CONFLICT_DATA:{"email":"[email]","request_code":"[request_code]","type":"[type]"}
 
   [type] values: sync_conflict | cross_role_duplicate | duplicate
-- After listing all conflicts, say: "Use the buttons above to resolve each conflict." """
+- After listing all conflicts, say: "Use the buttons above to resolve each conflict."
+
+Proactive suggestions (add 1–2 sentences after completing each task):
+- After create_job_folder → suggest uploading CVs to the new folder.
+- After process_cv_file (success) → suggest running a sync to push to the team database.
+- After run_sync_now → suggest checking alerts if any conflicts were flagged.
+- After resolving a conflict → suggest viewing the Excel file to confirm the change.
+Keep suggestions brief (1 sentence each), natural, and only when they add value. Do not repeat the same suggestion twice in a row."""
 
 
 class State(TypedDict):
@@ -1008,13 +1044,23 @@ def _parse_one(path: str, timeout: float = 120.0) -> dict:
 
 
 def _parse_worker(job_id: str, file_paths: list[str]) -> None:
-    """Background thread: parse each saved CV one-by-one and write to Excel."""
+    """Background thread: parse up to 3 CVs in parallel, then flush Excel once."""
     job = _parse_jobs[job_id]
-    for i, path in enumerate(file_paths):
+
+    def _run_one(path: str) -> dict:
         name = os.path.basename(path)
         job["current"] = name
         try:
             result = _parse_one(path)
+            return {"name": name, **result}
+        except Exception as e:  # noqa: BLE001
+            return {"name": name, "status": "error", "messages": [str(e)]}
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(_run_one, p): p for p in file_paths}
+        for fut in as_completed(futures):
+            result = fut.result()
+            name   = result.get("name", os.path.basename(futures[fut]))
             status = result.get("status", "error")
             messages = result.get("messages", [])
             if status in ("success", "no_excel", "duplicate", "cross_role_duplicate"):
@@ -1022,11 +1068,9 @@ def _parse_worker(job_id: str, file_paths: list[str]) -> None:
             else:
                 job["failed"] += 1
             job["results"].append({"name": name, "status": status, "messages": messages})
-        except Exception as e:  # noqa: BLE001
-            job["failed"] += 1
-            job["results"].append({"name": name, "status": "error", "messages": [str(e)]})
-        job["progress"] = i + 1
-    _flush_excel_pending()   # one write for the whole batch
+            job["progress"] += 1
+
+    _flush_excel_pending()
     job["status"] = "complete" if job["failed"] == 0 else ("partial" if job["done"] > 0 else "failed")
     job["finished_at"] = datetime.now().isoformat()
 

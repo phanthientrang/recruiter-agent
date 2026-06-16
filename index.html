@@ -621,6 +621,10 @@
     2. Run <code>ngrok http 8080</code><br>
     3. Paste the <code>https://xxx.ngrok-free.app</code> URL above and Save
   </div>
+  <div style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:12px;">
+    <div class="sp-field-label">Chat History</div>
+    <button class="sp-save-btn" style="background:#ef4444;margin-top:6px;" onclick="clearHistory()">Clear History</button>
+  </div>
 </div>
 
 <!-- ═══════════════ BACKDROP ═══════════════ -->
@@ -635,18 +639,42 @@
   <div class="modal-body">
     <div class="field">
       <label>Department</label>
-      <div class="dept-row">
-        <select id="dept-select" onchange="onDeptChange()">
-          <option value="">Select department…</option>
-          <option value="ZDA">ZDA</option>
-          <option value="ZCA">ZCA</option>
-          <option value="ZLA">ZLA</option>
-          <option value="ZMA">ZMA</option>
-          <option value="__custom__">Other (type below)…</option>
-        </select>
-        <input type="text" id="dept-custom" placeholder="Enter code"
-               class="hidden" oninput="updateFolderPreview()" />
-      </div>
+      <input type="text" id="dept-input" list="dept-list"
+             placeholder="Type to search (e.g. ZDA or User Growth)…"
+             oninput="updateFolderPreview()" autocomplete="off" />
+      <datalist id="dept-list">
+        <option value="UG — User Growth"></option>
+        <option value="DGS — Digital Services"></option>
+        <option value="DLS — Daily Life Services"></option>
+        <option value="WS — Wealth Solutions"></option>
+        <option value="CE — Credit Enablement"></option>
+        <option value="ZGP — Global Partnership"></option>
+        <option value="ZBP — Bank Partnership"></option>
+        <option value="MBS — Mobility Services"></option>
+        <option value="SMEX — SME Expansion"></option>
+        <option value="CG — Commercial Growth"></option>
+        <option value="ZFPA — Finance"></option>
+        <option value="ACC — Accounting"></option>
+        <option value="ZOP — Operations"></option>
+        <option value="L&C — Legal &amp; Compliance"></option>
+        <option value="HR PY — Human Resources"></option>
+        <option value="CS — Customer Services"></option>
+        <option value="ZDS — Zalopay Data Services"></option>
+        <option value="ZDA — Zalopay Data Avenger"></option>
+        <option value="ZPO — Product"></option>
+        <option value="PMO — Project Management &amp; Ops"></option>
+        <option value="PTO — Technical Operations"></option>
+        <option value="PDP — Payment Data Platform"></option>
+        <option value="PES — Enterprise Architect"></option>
+        <option value="PQE — Quality Engineering"></option>
+        <option value="PSE — Security"></option>
+        <option value="PTech — AI Enablement"></option>
+        <option value="PFT — Financial Technology"></option>
+        <option value="PMT — Merchant Technology"></option>
+        <option value="PCT — Consumer Technology"></option>
+        <option value="PGE — Growth Enablement"></option>
+        <option value="PCP — Payment Core Platform"></option>
+      </datalist>
     </div>
     <div class="field">
       <label>Position Name</label>
@@ -874,11 +902,38 @@
   let selectedFiles     = [];
   let _knownFolders     = [];
 
+  const HISTORY_KEY   = "recruiter_chat_history";
+  const HISTORY_LIMIT = 50;
+
+  function _saveHistory(role, text) {
+    try {
+      const hist = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+      hist.push({ role, content: text, timestamp: new Date().toISOString() });
+      if (hist.length > HISTORY_LIMIT) hist.splice(0, hist.length - HISTORY_LIMIT);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(hist));
+    } catch (_) {}
+  }
+
+  function _restoreHistory() {
+    try {
+      const hist = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+      hist.forEach(({ role, content }) => appendMessage(role, content, false));
+    } catch (_) {}
+  }
+
+  function clearHistory() {
+    localStorage.removeItem(HISTORY_KEY);
+    messagesEl.innerHTML = "";
+    document.getElementById("settings-panel").classList.add("hidden");
+    appendMessage("agent", "Chat history cleared.", false);
+  }
+
   function nowStr() {
     return new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
   }
 
-  function appendMessage(role, text) {
+  function appendMessage(role, text, save = true) {
+    if (save) _saveHistory(role, text);
     const row    = document.createElement("div");
     row.className = `msg-row ${role}`;
     const bubble = document.createElement("div");
@@ -1096,21 +1151,11 @@
 
   /* ─── Modal 1: Create Job Folder ───────────────────────── */
 
-  function onDeptChange() {
-    const sel    = document.getElementById("dept-select");
-    const custom = document.getElementById("dept-custom");
-    const isOther = sel.value === "__custom__";
-    custom.classList.toggle("hidden", !isOther);
-    if (isOther) custom.focus();
-    else custom.value = "";
-    updateFolderPreview();
-  }
-
   function getDept() {
-    const sel = document.getElementById("dept-select");
-    return sel.value === "__custom__"
-      ? document.getElementById("dept-custom").value.trim()
-      : sel.value;
+    const raw = document.getElementById("dept-input").value.trim();
+    // If user selected from datalist (format "CODE — Full Name"), extract code only
+    const m = raw.match(/^([^\s—]+(?:\s[^\s—]+)*)\s*—/);
+    return m ? m[1].trim() : raw;
   }
 
   function updateFolderPreview() {
@@ -1132,12 +1177,10 @@
     closeModal();
     sendToAgent(`Create a job folder named "${name}"`, `📁 Create job folder: ${name}`);
 
-    document.getElementById("dept-select").value    = "";
-    document.getElementById("dept-custom").value    = "";
-    document.getElementById("position-input").value = "";
-    document.getElementById("jobcode-input").value  = "";
+    document.getElementById("dept-input").value      = "";
+    document.getElementById("position-input").value  = "";
+    document.getElementById("jobcode-input").value   = "";
     document.getElementById("folder-preview-name").textContent = "—";
-    document.getElementById("dept-custom").classList.add("hidden");
   }
 
   /* ─── Modal 2: Upload CV Wizard ─────────────────────────── */
@@ -1435,18 +1478,24 @@
     Notification.requestPermission();
   }
 
-  appendMessage("agent",
-    "Hi! I'm your Recruiter Assistant.\n\n" +
-    "Before the demo:\n" +
-    "  1. python local_server.py\n" +
-    "  2. ngrok http 8080\n" +
-    "  3. Paste the ngrok URL via ⚙️ (top right)\n\n" +
-    "Then use the buttons to:\n" +
-    "📁  Create a job folder with standard sub-folders\n" +
-    "📄  Upload a CV — file is saved locally and processed\n" +
-    "🔄  Sync your database with the team file\n\n" +
-    "Or just type a message below."
-  );
+  // Restore previous chat history; show welcome only for fresh sessions
+  const _existingHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+  if (_existingHistory.length > 0) {
+    _restoreHistory();
+  } else {
+    appendMessage("agent",
+      "Hi! I'm your Recruiter Assistant.\n\n" +
+      "Before the demo:\n" +
+      "  1. python local_server.py\n" +
+      "  2. ngrok http 8080\n" +
+      "  3. Paste the ngrok URL via ⚙️ (top right)\n\n" +
+      "Then use the buttons to:\n" +
+      "📁  Create a job folder with standard sub-folders\n" +
+      "📄  Upload a CV — file is saved locally and processed\n" +
+      "🔄  Sync your database with the team file\n\n" +
+      "Or just type a message below."
+    );
+  }
 
   textarea.focus();
 </script>
