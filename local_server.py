@@ -1159,9 +1159,9 @@ def _parse_worker(job_id: str, file_paths: list[str]) -> None:
         job["current"] = name
         try:
             result = _parse_one(path)
-            return {"name": name, **result}
+            return {"name": name, **result, "path": path}
         except Exception as e:  # noqa: BLE001
-            return {"name": name, "status": "error", "messages": [str(e)]}
+            return {"name": name, "status": "error", "messages": [str(e)], "path": path}
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {pool.submit(_run_one, p): p for p in file_paths}

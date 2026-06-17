@@ -1,11 +1,17 @@
 # recruiter-agent
 
-A GreenNode AgentBase agent.
+A recruitment assistant agent. It turns CVs (PDF/DOCX) dropped into job folders into rows in an
+Excel candidate database, flags duplicates/cross-role/cross-TA conflicts, and syncs a personal
+database to a shared team database — all through a chat UI (`index.html`).
+
+Built on GreenNode AgentBase for cloud deployment; for local development it runs as a
+standalone Starlette server (`local_server.py`).
 
 ## Prerequisites
 
 - Python 3.10+
-- A GreenNode IAM Service Account ([create one here](https://iam.console.vngcloud.vn/service-accounts))
+- A GreenNode IAM Service Account — only needed for [cloud deployment](#deploy-to-agentbase-runtime), not local dev ([create one here](https://iam.console.vngcloud.vn/service-accounts))
+- [ngrok](https://ngrok.com/) — only needed if you want to open the chat UI from another device
 
 ## Setup
 
@@ -23,20 +29,21 @@ A GreenNode AgentBase agent.
    pip install -r requirements.txt
    ```
 
-3. Configure credentials for **local development** (choose one method):
-
-   **Option A** - Environment variables:
+3. Configure environment variables:
    ```bash
    cp .env.example .env
-   # Edit .env with your credentials
    ```
+   Edit `.env` and fill in:
+   - `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` — see [Configure LLM](#configure-llm)
+   - `JOBS_BASE_DIR` — root folder containing all job folders
+   - `EXCEL_PATH` — path to your personal candidate database (`.xlsx`/`.xlsm`)
+   - `TA_INCHARGE` — your name as it appears in the "TA Incharge" column (defaults to Windows login)
+   - `TEAM_EXCEL_PATH` — path to the shared team database (used by sync)
+   - `CV_POLL_INTERVAL` — seconds between background CV folder scans (default `60`)
 
-   **Option B** - Config file (already created):
-   Edit `.greennode.json` with your `client_id` and `client_secret` from your IAM Service Account.
-
-   > **Note**: When deployed on AgentBase Runtime, the IAM service account and Agent Identity are managed by the runtime system and automatically available to the SDK — no manual credential configuration needed in the container.
-
-4. (Optional, for local dev) Create an Agent Identity at https://aiplatform.console.vngcloud.vn/access-control and set `agent_identity` in `.greennode.json` or `GREENNODE_AGENT_IDENTITY` env var. On AgentBase Runtime, this is managed automatically by the runtime system.
+   `GREENNODE_CLIENT_ID` / `GREENNODE_CLIENT_SECRET` / `GREENNODE_AGENT_IDENTITY` (or `.greennode.json`)
+   are only needed for [cloud deployment](#deploy-to-agentbase-runtime) — on AgentBase Runtime these
+   are managed automatically and don't need to be set locally.
 
 ## Configure LLM
 
@@ -57,27 +64,43 @@ LLM_MODEL=your-model-name
 
 ## Run Locally
 
-```bash
-python main.py
-```
+Local dev uses `local_server.py`, **not** `main.py`. `main.py` imports the `greennode_agentbase`
+SDK, which crashes on import in Windows `cp1252` terminals (it prints a `✓` via `rich`); `main.py`
+is kept only for [cloud deployment](#deploy-to-agentbase-runtime).
 
-The agent starts on `http://127.0.0.1:8080`.
+1. Start the server:
+   ```bash
+   python local_server.py
+   ```
+   It starts on `http://127.0.0.1:8080` (bound to `0.0.0.0:8080`).
 
-Test it:
+2. Open `index.html` directly in a browser (double-click the file, or `file://` it).
+
+3. Click the ⚙️ gear icon in the UI and set the server URL:
+   - Same machine: `http://127.0.0.1:8080`
+   - Different device / phone: run `ngrok http 8080`, then paste the `https://xxx.ngrok-free.app` URL
+
+From the chat UI you can create job folders, upload CVs, resolve duplicate/conflict alerts via
+buttons, and trigger a database sync.
+
+### Endpoints
+
+| Method | Path                     | Purpose                                          |
+|--------|--------------------------|---------------------------------------------------|
+| POST   | `/invocations`           | Chat with the agent: `{"message": "..."}`         |
+| POST   | `/save-cv`                | Save an uploaded CV to disk (no AI), multipart: `folder`, `subfolder`, `file` |
+| POST   | `/start-parse`            | Start background AI parsing of saved CVs: `{"files": [...]}` |
+| GET    | `/parse-status/{job_id}` | Poll a background parse job's status              |
+| GET    | `/list-folders`           | List job folders under `JOBS_BASE_DIR`            |
+| GET    | `/open-folder?path=...`  | Open a job folder in Windows Explorer             |
+| GET    | `/health`                 | `{"status": "healthy"}`                           |
+
+Test the chat endpoint directly:
 ```bash
 curl -X POST http://127.0.0.1:8080/invocations \
   -H "Content-Type: application/json" \
   -d '{"message": "Hello, agent!"}'
 ```
-
-**Testing tips** — the SDK extracts metadata from request headers (defined in `greennode_agentbase.runtime.models`):
-- If the agent uses **memory** (short-term or long-term), **both headers are required** — the agent will return an error without them:
-  `-H "X-GreenNode-AgentBase-User-Id: test-user"` `-H "X-GreenNode-AgentBase-Session-Id: test-session-1"`
-- If the agent uses **user identity features** (delegated API key, OAuth2 3LO token), pass a user header so credentials resolve correctly:
-  `-H "X-GreenNode-AgentBase-User-Id: user-abc"`
-- To pass **custom headers** to the agent, use the `X-GreenNode-AgentBase-Custom-` prefix. The SDK collects all headers with this prefix (plus `Authorization`) into `context.request_headers`:
-  `-H "X-GreenNode-AgentBase-Custom-My-Key: some-value"`
-  Then access in handler: `context.request_headers.get("X-GreenNode-AgentBase-Custom-My-Key")`
 
 Health check:
 ```bash
@@ -85,6 +108,10 @@ curl http://127.0.0.1:8080/health
 ```
 
 ## Deploy to AgentBase Runtime
+
+The Docker image runs `main.py` (`Dockerfile` `CMD`), which wraps the same agent logic in the
+`GreenNodeAgentBaseApp` SDK and only exposes `/invocations` + a health check — the `local_server.py`
+file-upload/sync endpoints are local-dev only and are not part of the cloud image.
 
 1. Build and push your Docker image (or use `/agentbase-deploy` skill)
 2. Create a Runtime at https://aiplatform.console.vngcloud.vn/agent-runtime?tab=runtime
@@ -98,8 +125,12 @@ When you need conversation history or long-term memory, use `/agentbase-memory` 
 
 ## Project Structure
 
-- `main.py` - Agent entrypoint with handler and health check
-- `Dockerfile` - Container image definition
+- `main.py` - Cloud entrypoint (`GreenNodeAgentBaseApp`), used by the Docker image only
+- `local_server.py` - Local dev server (Starlette/uvicorn) with the CV-upload/parse/sync endpoints
+- `index.html` - Chat UI: CV upload, duplicate/conflict resolution, sync controls
+- `Dockerfile` - Container image definition (runs `main.py`)
 - `requirements.txt` - Python dependencies
-- `.greennode.json` - AgentBase configuration
+- `.greennode.json` - AgentBase configuration (cloud deployment)
 - `.env.example` - Environment variable template
+- `processed_cvs.json`, `sync_state.json` - local runtime state (which CVs were processed, last sync snapshot)
+- `data/alerts.json` - pending alerts (duplicates, conflicts, sync results) shown in the chat UI
