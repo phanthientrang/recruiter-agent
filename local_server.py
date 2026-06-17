@@ -181,10 +181,12 @@ def _init_excel_cache() -> None:
         email_l = str(row_dict.get("Email") or "").strip().lower()
         if email_l:
             _excel_cache.setdefault(email_l, []).append({
-                "request_code":   str(row_dict.get("Request code") or "").strip(),
-                "candidate_name": row_dict.get("Candidate name"),
-                "ta_incharge":    str(row_dict.get("TA Incharge") or "").strip().lower(),
-                "row_num":        row_idx,
+                "request_code":       str(row_dict.get("Request code") or "").strip(),
+                "candidate_name":     row_dict.get("Candidate name"),
+                "ta_incharge":        str(row_dict.get("TA Incharge") or "").strip().lower(),
+                "processed_team":     str(row_dict.get("Processed Team") or "").strip(),
+                "processed_position": str(row_dict.get("Processed Position") or "").strip(),
+                "row_num":            row_idx,
             })
         max_row = row_idx
     _excel_next_row = max_row + 1
@@ -196,7 +198,12 @@ def _check_duplicate_cache(email: str, request_code: str) -> dict | None:
     with _excel_lock:
         for entry in _excel_cache.get(email_l, []):
             if entry["request_code"] == rc:
-                return {"row_number": entry["row_num"], "candidate_name": entry["candidate_name"]}
+                return {
+                    "row_number":         entry["row_num"],
+                    "candidate_name":     entry["candidate_name"],
+                    "processed_team":     entry.get("processed_team", ""),
+                    "processed_position": entry.get("processed_position", ""),
+                }
     return None
 
 def _check_cross_role_cache(email: str, exclude_request_code: str) -> list[dict]:
@@ -208,9 +215,11 @@ def _check_cross_role_cache(email: str, exclude_request_code: str) -> list[dict]
         for entry in _excel_cache.get(email_l, []):
             if entry["request_code"] != exc_rc and entry["ta_incharge"] == ta_l:
                 found.append({
-                    "row_number":     entry["row_num"],
-                    "candidate_name": entry["candidate_name"],
-                    "request_code":   entry["request_code"],
+                    "row_number":         entry["row_num"],
+                    "candidate_name":     entry["candidate_name"],
+                    "request_code":       entry["request_code"],
+                    "processed_team":     entry.get("processed_team", ""),
+                    "processed_position": entry.get("processed_position", ""),
                 })
     return found
 
@@ -223,10 +232,12 @@ def _cache_add_row(row_data: dict) -> int:
         _excel_next_row += 1
         if email_l:
             _excel_cache.setdefault(email_l, []).append({
-                "request_code":   str(row_data.get("Request code") or "").strip(),
-                "candidate_name": row_data.get("Candidate name"),
-                "ta_incharge":    str(row_data.get("TA Incharge") or "").strip().lower(),
-                "row_num":        row_num,
+                "request_code":       str(row_data.get("Request code") or "").strip(),
+                "candidate_name":     row_data.get("Candidate name"),
+                "ta_incharge":        str(row_data.get("TA Incharge") or "").strip().lower(),
+                "processed_team":     str(row_data.get("Processed Team") or "").strip(),
+                "processed_position": str(row_data.get("Processed Position") or "").strip(),
+                "row_num":            row_num,
             })
         _excel_pending.append({"__row_num__": row_num, **row_data})
     return row_num
@@ -424,10 +435,12 @@ def _add_row(row_data: dict) -> int:
     if email_l:
         with _excel_lock:
             _excel_cache.setdefault(email_l, []).append({
-                "request_code":   str(row_data.get("Request code") or "").strip(),
-                "candidate_name": row_data.get("Candidate name"),
-                "ta_incharge":    str(row_data.get("TA Incharge") or "").strip().lower(),
-                "row_num":        row_num,
+                "request_code":       str(row_data.get("Request code") or "").strip(),
+                "candidate_name":     row_data.get("Candidate name"),
+                "ta_incharge":        str(row_data.get("TA Incharge") or "").strip().lower(),
+                "processed_team":     str(row_data.get("Processed Team") or "").strip(),
+                "processed_position": str(row_data.get("Processed Position") or "").strip(),
+                "row_num":            row_num,
             })
     return row_num
 
@@ -517,14 +530,17 @@ def _process_cv(file_path: str) -> dict:
     ] if not val]
     if missing:
         result["messages"].append(f"Warning - Missing fields (left blank): {', '.join(missing)}")
+    new_job = " - ".join(filter(None, [folder.get("processed_team"), folder.get("processed_position"), folder.get("request_code")]))
     if cv.email:
         dup = _check_duplicate_cache(cv.email, folder["request_code"])
         if dup:
+            existing_job = " - ".join(filter(None, [dup.get("processed_team"), dup.get("processed_position"), folder["request_code"]]))
             result.update(status="duplicate", messages=result["messages"] + [
                 f"DUPLICATE: {cv.full_name or 'Unknown'} ({cv.email}) already exists "
                 f"in row {dup['row_number']} for {folder['request_code']}. "
-                "Use resolve_duplicate to keep or overwrite."
-            ])
+                "Use resolve_duplicate to keep, overwrite, or add as new."
+            ], email=cv.email, candidate_name=cv.full_name, request_code=folder["request_code"],
+               new_job=new_job, new_source=folder.get("source"), existing_job=existing_job)
             _alert_push({**result, "timestamp": datetime.now().isoformat(),
                 "file_path": os.path.normpath(file_path), "cv_fields": cv.model_dump(),
                 "folder_info": folder, "duplicate_row": dup["row_number"]})
@@ -532,11 +548,14 @@ def _process_cv(file_path: str) -> dict:
         cross_role = _check_cross_role_cache(cv.email, folder["request_code"])
         if cross_role:
             codes = ", ".join(r["request_code"] for r in cross_role)
+            first = cross_role[0]
+            existing_job = " - ".join(filter(None, [first.get("processed_team"), first.get("processed_position"), first.get("request_code")]))
             result.update(status="cross_role_duplicate", messages=result["messages"] + [
                 f"CROSS-ROLE: {cv.full_name or 'This candidate'} ({cv.email}) is already "
                 f"in your pipeline for another role ({codes}). "
-                "Use resolve_cross_role to add a new row or skip."
-            ])
+                "Use resolve_duplicate to keep or add as new."
+            ], email=cv.email, candidate_name=cv.full_name, request_code=folder["request_code"],
+               new_job=new_job, new_source=folder.get("source"), existing_job=existing_job)
             _alert_push({**result, "timestamp": datetime.now().isoformat(),
                 "file_path": os.path.normpath(file_path), "cv_fields": cv.model_dump(),
                 "folder_info": folder, "existing_roles": [r["request_code"] for r in cross_role]})
@@ -778,27 +797,37 @@ def clear_alerts() -> str:
 
 @tool
 def resolve_duplicate(email: str, request_code: str, action: str) -> str:
-    """Resolve a duplicate candidate detected during CV processing.
+    """Resolve a duplicate or cross-role duplicate candidate detected during CV processing.
 
     Args:
         email: The candidate's email address.
-        request_code: The job request code.
-        action: 'keep' to keep the existing row, or 'overwrite' to replace with new CV data.
+        request_code: The job request code of the NEW CV being processed.
+        action: 'keep' to keep the existing record unchanged, 'overwrite' to replace the
+            existing record with the new CV data (same-role duplicates only), or 'add' to
+            add the new CV as a separate new row without touching the existing record.
     """
-    pending = next((a for a in _alerts if a.get("status") == "duplicate"
+    pending = next((a for a in _alerts if a.get("status") in ("duplicate", "cross_role_duplicate")
                     and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
                     and str(a.get("folder_info", {}).get("request_code") or "") == request_code.strip()), None)
     if not pending: return f"No pending duplicate for '{email}' / '{request_code}'."
     name = pending["cv_fields"].get("full_name") or "Unknown"
-    row_num = pending["duplicate_row"]
-    if action.lower() == "keep":
-        _alert_remove(pending); return f"Kept existing row {row_num} for {name}. No changes made."
-    if action.lower() == "overwrite":
+    is_cross_role = pending.get("status") == "cross_role_duplicate"
+    action = action.lower()
+    if action == "keep":
+        _alert_remove(pending); return f"Kept existing record for {name}. No changes made."
+    if action == "overwrite":
+        if is_cross_role:
+            return "Cannot overwrite: the existing record is for a different role. Use 'add' instead."
         row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_info"], pending["file_path"])
-        try: _overwrite_row(row_num, row_data)
+        try: _overwrite_row(pending["duplicate_row"], row_data)
         except Exception as e: return f"Overwrite failed: {e}"
-        _alert_remove(pending); return f"Overwrote row {row_num} with updated data for {name}."
-    return "Invalid action. Use 'keep' or 'overwrite'."
+        _alert_remove(pending); return f"Overwrote row {pending['duplicate_row']} with updated data for {name}."
+    if action == "add":
+        row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_info"], pending["file_path"])
+        try: new_row = _add_row(row_data)
+        except Exception as e: return f"Failed to add row: {e}"
+        _alert_remove(pending); return f"Added {name} as new row {new_row}."
+    return "Invalid action. Use 'keep', 'overwrite', or 'add'."
 
 @tool
 def resolve_cross_role(email: str, new_request_code: str, action: str) -> str:
@@ -881,8 +910,8 @@ Skills:
 2. process_cv_file      - process a CV file and add candidate to personal database
 3. get_alerts           - check pending alerts
 4. clear_alerts         - dismiss resolved alerts
-5. resolve_duplicate    - same email + same job code: keep or overwrite
-6. resolve_cross_role   - same email + different job code: add or skip
+5. resolve_duplicate    - same email (same or different job code): keep, overwrite (same job code only), or add as new
+6. resolve_cross_role   - same email + different job code: add or skip (legacy, prefer resolve_duplicate)
 7. resolve_sync_conflict - sync blocked by different TA: add new row or skip
 8. run_sync_now         - manually trigger personal -> team database sync
 9. get_sync_status      - show last sync time and next scheduled sync
@@ -1079,7 +1108,7 @@ def _parse_worker(job_id: str, file_paths: list[str]) -> None:
                 job["done"] += 1
             else:
                 job["failed"] += 1
-            job["results"].append({"name": name, "status": status, "messages": messages})
+            job["results"].append({**result, "name": name, "status": status, "messages": messages})
             job["progress"] += 1
 
     _flush_excel_pending()
