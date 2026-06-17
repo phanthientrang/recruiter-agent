@@ -1546,6 +1546,8 @@
             appendMessage("error",
               `❌ ${r.name}: [${r.status}] ${(r.messages || []).join("; ")}`)
           );
+          const retryBtn = buildRetryButton(bad);
+          if (retryBtn) { messagesEl.appendChild(retryBtn); scrollBottom(); }
         }
       } catch(e) {
         appendMessage("error", `⚠️ Status check error: ${e.message}`);
@@ -1553,6 +1555,37 @@
     }
 
     setTimeout(check, 2500);
+  }
+
+  function buildRetryButton(failedResults) {
+    const paths = failedResults.map(r => r.path).filter(Boolean);
+    if (!paths.length) return null;
+
+    const wrap = document.createElement("div");
+    wrap.style.marginTop = "8px";
+    const btn = document.createElement("button");
+    btn.className = "conflict-btn conflict-btn-primary";
+    const label = () => `🔄 Retry Failed (${paths.length})`;
+    btn.textContent = label();
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = "⏳ Retrying…";
+      try {
+        const job = await fetchJSON(`${getBaseUrl()}/start-parse`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({files: paths}),
+        });
+        wrap.remove();
+        if (job.job_id) pollParseJob(job.job_id);
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = label();
+        appendMessage("error", `⚠️ Could not start retry: ${e.message}`);
+      }
+    };
+    wrap.appendChild(btn);
+    return wrap;
   }
 
   function showBrowserNotification(title, body) {
