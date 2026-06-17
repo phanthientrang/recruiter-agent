@@ -62,6 +62,15 @@ PROCESSED_FILES_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 
 JOB_SUB_FOLDERS = ["LinkedIn", "VNG Careers", "Referral", "TA Search", "Others"]
 
+
+def _safe_join(base_dir: str, *parts: str) -> Path:
+    """Join parts onto base_dir, raising ValueError if the result would escape base_dir."""
+    base = Path(base_dir).resolve()
+    target = (base / Path(*parts)).resolve()
+    if target != base and not target.is_relative_to(base):
+        raise ValueError(f"Path escapes base directory: {Path(*parts)}")
+    return target
+
 DB_COLUMNS = [
     "No", "Request code", "Candidate name", "Processed Team", "Processed Position",
     "Entry date", "Source", "Referrer", "Latest company", "Latest position",
@@ -300,14 +309,11 @@ def _extract_cv_text(file_path: str) -> str:
 # LLM CV field extraction
 # ---------------------------------------------------------------------------
 class _CVFields(BaseModel):
-    full_name:         Optional[str]       = None
-    email:             Optional[str]       = None
-    phone:             Optional[str]       = None
-    current_company:   Optional[str]       = None
-    current_title:     Optional[str]       = None
-    years_experience:  Optional[int]       = None
-    top_skills:        Optional[list[str]] = None
-    highest_education: Optional[str]       = None
+    full_name:       Optional[str] = None
+    email:           Optional[str] = None
+    phone:           Optional[str] = None
+    current_company: Optional[str] = None
+    current_title:   Optional[str] = None
 
 def _parse_cv_with_llm(text: str) -> _CVFields:
     structured_llm = llm.with_structured_output(_CVFields)
@@ -733,7 +739,10 @@ def create_job_folder(folder_name: str) -> str:
     Args:
         folder_name: Name of the job folder (e.g. 'ZDA - Data Scientist - 26-ZDA-3117').
     """
-    job_path = os.path.join(JOBS_BASE_DIR, folder_name)
+    try:
+        job_path = _safe_join(JOBS_BASE_DIR, folder_name)
+    except ValueError:
+        return f"Invalid folder name '{folder_name}': must not escape the jobs directory."
     if os.path.exists(job_path):
         return f"Folder '{folder_name}' already exists.\nFOLDER_PATH: {job_path}"
     os.makedirs(job_path)
@@ -865,7 +874,7 @@ def get_sync_status() -> str:
 # ---------------------------------------------------------------------------
 # LangGraph graph
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a Recruiter Assistant Agent for VNG recruitment operations.
+SYSTEM_PROMPT = """You are a Recruitment Agent.
 
 Skills:
 1. create_job_folder    - create job folder with standard sub-folders
@@ -976,7 +985,10 @@ async def handle_open_folder(request: Request) -> JSONResponse:
     path = request.query_params.get("path", "").strip()
     if not path:
         return JSONResponse({"status": "error", "response": "Missing path"}, status_code=400)
-    path_obj = Path(os.path.normpath(path))
+    try:
+        path_obj = _safe_join(JOBS_BASE_DIR, os.path.normpath(path))
+    except ValueError:
+        return JSONResponse({"status": "error", "response": "Path outside allowed directory"}, status_code=403)
     if not path_obj.is_dir():
         return JSONResponse({"status": "error", "response": f"Not a directory: {path}"}, status_code=404)
     try:
@@ -1106,7 +1118,10 @@ async def handle_save_cv(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    save_dir = Path(JOBS_BASE_DIR) / folder / subfolder
+    try:
+        save_dir = _safe_join(JOBS_BASE_DIR, folder, subfolder)
+    except ValueError:
+        return JSONResponse({"status": "error", "response": "Invalid folder path."}, status_code=400)
     save_dir.mkdir(parents=True, exist_ok=True)
     save_path = save_dir / safe_name
 

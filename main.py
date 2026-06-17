@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from openpyxl import load_workbook
@@ -35,6 +35,15 @@ CV_POLL_INTERVAL = int(os.environ.get("CV_POLL_INTERVAL", "60"))
 PROCESSED_FILES_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "processed_cvs.json")
 
 JOB_SUB_FOLDERS = ["LinkedIn", "VNG Careers", "Referral", "TA Search", "Others"]
+
+
+def _safe_join(base_dir: str, *parts: str) -> Path:
+    """Join parts onto base_dir, raising ValueError if the result would escape base_dir."""
+    base = Path(base_dir).resolve()
+    target = (base / Path(*parts)).resolve()
+    if target != base and not target.is_relative_to(base):
+        raise ValueError(f"Path escapes base directory: {Path(*parts)}")
+    return target
 
 DB_COLUMNS = [
     "No", "Request code", "Candidate name", "Processed Team", "Processed Position",
@@ -862,7 +871,10 @@ def create_job_folder(folder_name: str) -> str:
     Args:
         folder_name: Name of the job folder (e.g. 'ZDA - Data Scientist - 26-ZDA-3117').
     """
-    job_path = os.path.join(JOBS_BASE_DIR, folder_name)
+    try:
+        job_path = _safe_join(JOBS_BASE_DIR, folder_name)
+    except ValueError:
+        return f"Invalid folder name '{folder_name}': must not escape the jobs directory."
     if os.path.exists(job_path):
         return f"Folder '{folder_name}' already exists."
     os.makedirs(job_path)
@@ -1041,7 +1053,7 @@ def get_sync_status() -> str:
 # ---------------------------------------------------------------------------
 # LangGraph graph
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a Recruiter Assistant Agent for VNG recruitment operations.
+SYSTEM_PROMPT = """You are a Recruitment Agent.
 
 Skills:
 1. **create_job_folder** — create job folder with standard sub-folders (LinkedIn, VNG Careers, Referral, TA Search, Others)
