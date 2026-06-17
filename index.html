@@ -1409,40 +1409,42 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({files: savedPaths}),
       });
-      if (job.job_id) pollParseJob(job.job_id, savedPaths.length);
+      if (job.job_id) pollParseJob(job.job_id);
     } catch(e) {
       appendMessage("error", `⚠️ Could not start background parsing: ${e.message}`);
     }
   }
 
-  function pollParseJob(jobId, total) {
-    const progressRow    = appendMessage("agent", `⏳ Parsing CVs in background… (0/${total})`);
-    const progressBubble = progressRow.querySelector(".bubble");
+  function pollParseJob(jobId) {
+    appendMessage("agent", "⏳ Processing CVs in background — we'll notify you when done");
 
     async function check() {
       try {
         const data = await fetchJSON(`${getBaseUrl()}/parse-status/${jobId}`);
-        const prog = data.progress || 0;
 
         if (data.status === "running") {
-          progressBubble.textContent = `⏳ Parsing CVs in background… (${prog}/${total})`;
           setTimeout(check, 2500);
           return;
         }
 
-        // Finished
-        progressBubble.textContent = `✅ Parse complete (${total}/${total})`;
-        const done   = data.done   || 0;
-        const failed = data.failed || 0;
-        const notifBody = failed === 0
-          ? `✅ Excel Updated! ${done} candidate${done !== 1 ? "s" : ""} added to database.`
-          : `⚠️ ${done} added, ${failed} failed — see chat for details.`;
+        // Finished — silent polling is over, surface the result now.
+        const results    = data.results || [];
+        const failed     = data.failed  || 0;
+        const added      = results.filter(r => r.status === "success").length;
+        const duplicates = results.filter(r => r.status === "duplicate" || r.status === "cross_role_duplicate").length;
 
-        appendMessage(failed > 0 ? "error" : "agent", notifBody);
+        const notifBody = failed === 0
+          ? `✅ Done! ${added} candidate${added !== 1 ? "s" : ""} added to database.`
+          : `⚠️ ${added} added, ${failed} failed — see chat for details.`;
         showBrowserNotification("Recruitment Agent", notifBody);
 
+        appendMessage("agent",
+          `✅ Parsing complete: ${added} candidate${added !== 1 ? "s" : ""} added, ` +
+          `${duplicates} duplicate${duplicates !== 1 ? "s" : ""} found. Check your Excel file.`
+        );
+
         if (failed > 0) {
-          const bad = (data.results || []).filter(r =>
+          const bad = results.filter(r =>
             !["success","no_excel","duplicate","cross_role_duplicate"].includes(r.status)
           );
           bad.forEach(r =>
@@ -1451,7 +1453,7 @@
           );
         }
       } catch(e) {
-        progressBubble.textContent = `⚠️ Status check error: ${e.message}`;
+        appendMessage("error", `⚠️ Status check error: ${e.message}`);
       }
     }
 
