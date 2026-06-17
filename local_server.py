@@ -33,7 +33,7 @@ from typing import Annotated, Optional, TypedDict
 
 import uvicorn
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START
@@ -780,14 +780,58 @@ def process_cv_file(file_path: str) -> str:
     result = _process_cv(file_path)
     return "\n".join([f"Status: {result['status']}"] + result["messages"])
 
+_RESOLVABLE_STATUSES = ("duplicate", "cross_role_duplicate", "sync_conflict_pending", "sync_cross_ta_pending")
+
+def _format_conflict_alert(alert: dict) -> str | None:
+    """Build a fully-substituted conflict block (including CONFLICT_DATA) directly from
+    the alert's own fields, so the LLM never has to construct or retype the JSON itself —
+    that's what was producing literal "[request_code]" placeholders in the chat UI."""
+    status = alert.get("status")
+    if status in ("duplicate", "cross_role_duplicate"):
+        email          = alert.get("email") or ""
+        name           = alert.get("candidate_name") or "Unknown"
+        request_code   = alert.get("request_code") or ""
+        existing_job   = alert.get("existing_job") or ""
+        new_job        = alert.get("new_job") or ""
+        if status == "duplicate":
+            issue = f"{name} already has a CV on file for this exact role ({request_code})."
+        else:
+            codes = ", ".join(alert.get("existing_roles") or [])
+            issue = f"{name} is already in your pipeline for another role ({codes})."
+        data = json.dumps({"email": email, "request_code": request_code, "type": status})
+        return (f"⚠️ CONFLICT: {name} ({email})\n"
+                f"Job: {request_code}\n"
+                f"Already in: {existing_job}\n"
+                f"New CV in: {new_job}\n"
+                f"Issue: {issue}\n"
+                f"CONFLICT_DATA:{data}")
+    if status in ("sync_conflict_pending", "sync_cross_ta_pending"):
+        email        = alert.get("email") or ""
+        name         = alert.get("candidate_name") or "Unknown"
+        request_code = alert.get("request_code") or ""
+        team_ta      = alert.get("team_ta") or ""
+        issue = f"{team_ta} already has this candidate in the team database for {request_code}."
+        data = json.dumps({"email": email, "request_code": request_code, "type": "sync_conflict"})
+        return (f"⚠️ CONFLICT: {name} ({email})\n"
+                f"Job: {request_code}\n"
+                f"Issue: {issue}\n"
+                f"CONFLICT_DATA:{data}")
+    return None
+
 @tool
 def get_alerts() -> str:
     """Get all pending alerts: CV processing results, duplicates, sync outcomes, errors."""
     if not _alerts: return "No pending alerts."
     lines = []
     for i, alert in enumerate(_alerts[-20:], 1):
-        lines.append(f"[{i}] {alert.get('timestamp', '')[:19]} | {alert.get('status', '')} | {alert.get('file', 'system')}")
-        for msg in alert.get("messages", []): lines.append(f"    {msg}")
+        status = alert.get("status", "")
+        block = _format_conflict_alert(alert) if status in _RESOLVABLE_STATUSES else None
+        if block:
+            lines.append(f"[{i}] {alert.get('timestamp', '')[:19]}")
+            lines.append(block)
+        else:
+            lines.append(f"[{i}] {alert.get('timestamp', '')[:19]} | {status} | {alert.get('file', 'system')}")
+            for msg in alert.get("messages", []): lines.append(f"    {msg}")
     return "\n".join(lines)
 
 @tool
@@ -930,14 +974,12 @@ Sync workflow:
 - After run_sync_now() completes, ALWAYS call get_alerts() immediately as your next step.
 - Report in plain language: "Sync complete: X added, Y updated, Z unchanged, N conflicts need attention."
 - If conflicts exist, show them immediately — never ask "would you like to check alerts?".
-- Format each conflict EXACTLY as follows (the CONFLICT_DATA line is required):
-
-  ⚠️ CONFLICT: [Candidate Name] ([email])
-  Job: [request_code]
-  Issue: [plain language explanation]
-  CONFLICT_DATA:{"email":"[email]","request_code":"[request_code]","type":"[type]"}
-
-  [type] values: sync_conflict | cross_role_duplicate | duplicate
+- get_alerts() already formats each conflict in full, including the CONFLICT_DATA line with
+  the real email/request_code/type values filled in. Copy every conflict block from
+  get_alerts() into your reply EXACTLY as returned, character for character — including the
+  CONFLICT_DATA line. Never retype, reformat, summarize, or recompute the CONFLICT_DATA line
+  yourself; never write a placeholder like "[request_code]" — always use get_alerts()'s own
+  text verbatim.
 - After listing all conflicts, say: "Use the buttons above to resolve each conflict."
 
 Proactive suggestions (add 1–2 sentences after completing each task):
@@ -1004,6 +1046,29 @@ def linkify_paths(text: str) -> str:
     return _LINKIFY_RE.sub(_replace, text)
 
 
+_FOLDER_PATH_LINE_RE   = re.compile(r'FOLDER_PATH:\s*[A-Za-z]:\\[^\n\r]+')
+_CONFLICT_DATA_LINE_RE = re.compile(r'CONFLICT_DATA:\{[^\n\r]+\}')
+
+def _ensure_tool_markers(messages: list, final_text: str) -> str:
+    """Guarantee FOLDER_PATH / CONFLICT_DATA lines produced by tool calls (create_job_folder,
+    get_alerts) survive into the final reply, even if the LLM paraphrased or dropped them
+    when writing its prose response. Without this, the chat UI's Open Folder button and
+    conflict-resolution buttons silently fail to render."""
+    extra_lines: list[str] = []
+    for m in messages:
+        if not isinstance(m, ToolMessage):
+            continue
+        content = m.content if isinstance(m.content, str) else str(m.content)
+        for line_re in (_FOLDER_PATH_LINE_RE, _CONFLICT_DATA_LINE_RE):
+            for match in line_re.finditer(content):
+                line = match.group(0)
+                if line not in final_text and line not in extra_lines:
+                    extra_lines.append(line)
+    if not extra_lines:
+        return final_text
+    return final_text.rstrip() + "\n" + "\n".join(extra_lines)
+
+
 async def handle_list_folders(request: Request) -> JSONResponse:
     base = Path(JOBS_BASE_DIR)
     folders: list[str] = sorted(d.name for d in base.iterdir() if d.is_dir()) if base.is_dir() else []
@@ -1042,9 +1107,10 @@ async def handle_invocations(request: Request) -> JSONResponse:
         result = await loop.run_in_executor(
             None, lambda: graph.invoke({"messages": [("user", message)]})
         )
+        final_text = _ensure_tool_markers(result["messages"], result["messages"][-1].content)
         return JSONResponse({
             "status": "success",
-            "response": linkify_paths(result["messages"][-1].content),
+            "response": linkify_paths(final_text),
             "timestamp": datetime.now().isoformat(),
         })
     except Exception as exc:
