@@ -188,7 +188,8 @@ class _CVFields(BaseModel):
 def _parse_cv_with_llm(text: str) -> _CVFields:
     structured_llm = llm.with_structured_output(_CVFields)
     return structured_llm.invoke(
-        "Extract the following fields from the CV below. "
+        "Respond in JSON format with the following fields extracted from the CV below: "
+        "candidate_name, email, phone, latest_company, latest_position. "
         "Return null for any field that cannot be clearly determined — do NOT guess.\n\n"
         f"CV:\n{text[:6000]}"
     )
