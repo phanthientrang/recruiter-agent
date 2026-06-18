@@ -11,3 +11,6 @@ __pycache__/
 .git/
 .gitignore
 *.md
+data/
+processed_cvs.json
+sync_state.json

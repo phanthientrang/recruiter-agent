@@ -1,49 +1,41 @@
 import asyncio
 import contextlib
+import io
 import json
 import os
-import unicodedata
+import re
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from openpyxl import load_workbook
-from openpyxl.comments import Comment
-from openpyxl.styles import Font, PatternFill
+from openpyxl import Workbook
 from pydantic import BaseModel
 
 from greennode_agentbase import GreenNodeAgentBaseApp, RequestContext, PingStatus
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Constants — Skill 1 & 2
+# Constants
 # ---------------------------------------------------------------------------
-JOBS_BASE_DIR = os.environ.get("JOBS_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
-EXCEL_PATH = os.environ.get("EXCEL_PATH", "")
 TA_INCHARGE = os.environ.get("TA_INCHARGE") or os.environ.get("USERNAME", "Unknown")
-CV_POLL_INTERVAL = int(os.environ.get("CV_POLL_INTERVAL", "60"))
-PROCESSED_FILES_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "processed_cvs.json")
-
 JOB_SUB_FOLDERS = ["LinkedIn", "VNG Careers", "Referral", "TA Search", "Others"]
-
-
-def _safe_join(base_dir: str, *parts: str) -> Path:
-    """Join parts onto base_dir, raising ValueError if the result would escape base_dir."""
-    base = Path(base_dir).resolve()
-    target = (base / Path(*parts)).resolve()
-    if target != base and not target.is_relative_to(base):
-        raise ValueError(f"Path escapes base directory: {Path(*parts)}")
-    return target
+_ALLOWED_EXT = {".pdf", ".docx"}
 
 DB_COLUMNS = [
     "No", "Request code", "Candidate name", "Processed Team", "Processed Position",
@@ -51,15 +43,9 @@ DB_COLUMNS = [
     "Email", "Phone", "Stage", "Status", "Note", "Reason for failure/withdrawal",
     "Last drawn salary", "Expected salary (Monthly Gross)", "TA Incharge", "Profile",
 ]
+SYNC_COLUMNS = [c for c in DB_COLUMNS if c not in ("No", "Profile")]
 
-# ---------------------------------------------------------------------------
-# Constants — Skill 3
-# ---------------------------------------------------------------------------
-TEAM_EXCEL_PATH = os.environ.get("TEAM_EXCEL_PATH", "")
-SYNC_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sync_state.json")
-CONFLICT_SHEET = "Conflict Log"
-
-# Schedule: TA_INCHARGE value (case-insensitive) → (hour, minute)
+# Schedule: TA_INCHARGE value (case-insensitive) -> (hour, minute)
 SYNC_SCHEDULE: dict[str, tuple[int, int]] = {
     "trangptt12": (7, 30),
     "hautt2":     (8,  0),
@@ -67,77 +53,124 @@ SYNC_SCHEDULE: dict[str, tuple[int, int]] = {
     "nhihm":      (9,  0),
 }
 
-# Columns synced to team DB — Profile excluded (personal file path, not a shared asset)
-SYNC_COLUMNS = [c for c in DB_COLUMNS if c not in ("No", "Profile")]
+# ---------------------------------------------------------------------------
+# In-memory store with local write-through (survives within one running
+# container/process; reset on redeploy or restart — there is no generic
+# AgentBase persistent-storage service, see project notes).
+# ---------------------------------------------------------------------------
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(_DATA_DIR, exist_ok=True)
 
-CONFLICT_LOG_COLUMNS = [
-    "Timestamp", "Email", "Request code", "Candidate name",
-    "Field", "My value", "Team value", "My TA", "Team TA",
-]
+PERSONAL_DB_PATH = os.path.join(_DATA_DIR, "personal_db.json")
+TEAM_DB_PATH     = os.path.join(_DATA_DIR, "team_db.json")
+JOB_FOLDERS_PATH = os.path.join(_DATA_DIR, "job_folders.json")
+ALERTS_PATH      = os.path.join(_DATA_DIR, "alerts.json")
+SYNC_STATE_PATH  = os.path.join(_DATA_DIR, "sync_state.json")
 
-# In-memory alert store
-_alerts: list[dict] = []
+_store_lock = threading.Lock()
+
+
+def _load_json(path: str, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def _save_json(path: str, data) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
+
+personal_db: list[dict] = _load_json(PERSONAL_DB_PATH, [])
+team_db: list[dict]     = _load_json(TEAM_DB_PATH, [])
+job_folders: list[dict] = _load_json(JOB_FOLDERS_PATH, [])
+_alerts: list[dict]     = _load_json(ALERTS_PATH, [])
+_sync_state: dict       = _load_json(SYNC_STATE_PATH, {"last_sync": None, "rows": {}})
+
+
+def _persist_personal() -> None:
+    with _store_lock:
+        _save_json(PERSONAL_DB_PATH, personal_db)
+
+
+def _persist_team() -> None:
+    with _store_lock:
+        _save_json(TEAM_DB_PATH, team_db)
+
+
+def _persist_folders() -> None:
+    with _store_lock:
+        _save_json(JOB_FOLDERS_PATH, job_folders)
+
+
+def _persist_alerts() -> None:
+    with _store_lock:
+        _save_json(ALERTS_PATH, _alerts)
+
+
+def _persist_sync_state() -> None:
+    with _store_lock:
+        _save_json(SYNC_STATE_PATH, _sync_state)
+
+
+def _push_alert(alert: dict) -> None:
+    _alerts.append(alert)
+    _persist_alerts()
+
+
+def _remove_alert(alert: dict) -> None:
+    _alerts.remove(alert)
+    _persist_alerts()
+
+
+def _clear_alerts() -> None:
+    _alerts.clear()
+    _persist_alerts()
+
+
+def _next_no(db: list[dict]) -> int:
+    return len(db) + 1
+
+
+def _public_row(row: dict) -> dict:
+    return {col: row.get(col) for col in DB_COLUMNS}
+
+
+def _split_folder_name(name: str) -> dict | None:
+    """Expects: '[Dept] - [Position] - [JobCode]'."""
+    segments = name.split(" - ", 2)
+    if len(segments) < 3:
+        return None
+    return {
+        "processed_team":     segments[0].strip(),
+        "processed_position":  segments[1].strip(),
+        "request_code":        segments[2].strip(),
+    }
 
 
 # ---------------------------------------------------------------------------
-# Shared Excel helpers
+# Skill 2 — CV text extraction (from uploaded bytes, no disk access)
 # ---------------------------------------------------------------------------
-def _open_wb(path: str, read_only: bool = False):
-    keep_vba = Path(path).suffix.lower() == ".xlsm"
-    return load_workbook(path, read_only=read_only, keep_vba=keep_vba)
-
-
-def _get_headers(ws) -> list[str]:
-    for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
-        return [str(c).strip() if c is not None else "" for c in row]
-    return []
-
-
-# ---------------------------------------------------------------------------
-# Skill 2 — CV text extraction
-# ---------------------------------------------------------------------------
-def _resolve_path(file_path: str) -> str:
-    """Resolve the actual file path, handling Unicode normalization differences
-    (NFC vs NFD) that occur with Vietnamese and other accented filenames on Windows."""
-    file_path = os.path.normpath(file_path)
-    if os.path.exists(file_path):
-        return file_path
-    # Try NFC (Windows filesystem norm)
-    nfc = unicodedata.normalize("NFC", file_path)
-    if os.path.exists(nfc):
-        return nfc
-    # Scan parent directory for a name that matches after NFC normalization
-    parent, name = os.path.dirname(file_path), os.path.basename(file_path)
-    name_nfc = unicodedata.normalize("NFC", name).lower()
-    if os.path.isdir(parent):
-        for fname in os.listdir(parent):
-            if unicodedata.normalize("NFC", fname).lower() == name_nfc:
-                return os.path.join(parent, fname)
-    return file_path  # return as-is; caller will get a clear error
-
-
-def _extract_pdf_text(file_path: str) -> str:
+def _extract_pdf_text_bytes(data: bytes) -> str:
     import pypdf
-    # Open via Python's built-in open() so Windows Unicode API handles the path,
-    # then pass the file object — avoids encoding issues inside pypdf itself.
-    with open(file_path, "rb") as f:
-        reader = pypdf.PdfReader(f)
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-def _extract_docx_text(file_path: str) -> str:
+def _extract_docx_text_bytes(data: bytes) -> str:
     from docx import Document
-    with open(file_path, "rb") as f:
-        doc = Document(f)
+    doc = Document(io.BytesIO(data))
     return "\n".join(p.text for p in doc.paragraphs)
 
 
-def _extract_cv_text(file_path: str) -> str:
-    ext = Path(file_path).suffix.lower()
+def _extract_cv_text_bytes(filename: str, data: bytes) -> str:
+    ext = Path(filename).suffix.lower()
     if ext == ".pdf":
-        return _extract_pdf_text(file_path)
+        return _extract_pdf_text_bytes(data)
     if ext == ".docx":
-        return _extract_docx_text(file_path)
+        return _extract_docx_text_bytes(data)
     raise ValueError(f"Unsupported file type '{ext}'. Only PDF and DOCX are supported.")
 
 
@@ -162,207 +195,98 @@ def _parse_cv_with_llm(text: str) -> _CVFields:
 
 
 # ---------------------------------------------------------------------------
-# Skill 2 — Folder path parsing
-# ---------------------------------------------------------------------------
-def _parse_folder_path(file_path: str) -> dict:
-    """Expects: .../[Dept] - [Position] - [JobCode]/[SubFolder]/filename"""
-    parts = Path(os.path.normpath(file_path)).parts
-    source = job_folder = None
-    for i, part in enumerate(parts):
-        if part in JOB_SUB_FOLDERS and i > 0:
-            source = part
-            job_folder = parts[i - 1]
-            break
-    if not source or not job_folder:
-        return {}
-    segments = job_folder.split(" - ", 2)
-    if len(segments) < 3:
-        return {}
-    return {
-        "processed_team": segments[0].strip(),
-        "processed_position": segments[1].strip(),
-        "request_code": segments[2].strip(),
-        "source": source,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Skill 2 — Personal DB Excel operations
+# Skill 2 — Personal DB operations (in-memory)
 # ---------------------------------------------------------------------------
 def _check_duplicate(email: str, request_code: str) -> dict | None:
-    if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
-        return None
-    wb = _open_wb(EXCEL_PATH, read_only=True)
-    if "Database" not in wb.sheetnames:
-        wb.close()
-        return None
-    ws = wb["Database"]
-    headers = None
-    for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-        if headers is None:
-            headers = [str(c).strip() if c is not None else "" for c in row]
-            continue
-        row_dict = dict(zip(headers, row))
-        if (str(row_dict.get("Email") or "").strip().lower() == email.strip().lower()
-                and str(row_dict.get("Request code") or "").strip() == request_code.strip()):
-            wb.close()
-            return {"row_number": row_idx, "candidate_name": row_dict.get("Candidate name")}
-    wb.close()
+    email_l, rc = email.strip().lower(), request_code.strip()
+    for row in personal_db:
+        if (str(row.get("Email") or "").strip().lower() == email_l
+                and str(row.get("Request code") or "").strip() == rc):
+            return row
     return None
 
 
 def _check_cross_role_duplicate(email: str, exclude_request_code: str) -> list[dict]:
-    """Return rows where the same email appears for a different job code under this TA (personal DB)."""
-    if not email or not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
-        return []
-    wb = _open_wb(EXCEL_PATH, read_only=True)
-    if "Database" not in wb.sheetnames:
-        wb.close()
-        return []
-    ws = wb["Database"]
-    headers = None
-    found = []
-    for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-        if headers is None:
-            headers = [str(c).strip() if c is not None else "" for c in row]
-            continue
-        row_dict = dict(zip(headers, row))
-        row_email = str(row_dict.get("Email") or "").strip().lower()
-        row_code = str(row_dict.get("Request code") or "").strip()
-        row_ta = str(row_dict.get("TA Incharge") or "").strip().lower()
-        if (row_email == email.strip().lower()
-                and row_code != exclude_request_code.strip()
-                and row_ta == (TA_INCHARGE or "").lower().strip()):
-            found.append({
-                "row_number": row_idx,
-                "candidate_name": row_dict.get("Candidate name"),
-                "request_code": row_code,
-            })
-    wb.close()
-    return found
+    email_l = email.strip().lower()
+    exc_rc = exclude_request_code.strip()
+    ta_l = (TA_INCHARGE or "").strip().lower()
+    return [
+        row for row in personal_db
+        if str(row.get("Email") or "").strip().lower() == email_l
+        and str(row.get("Request code") or "").strip() != exc_rc
+        and str(row.get("TA Incharge") or "").strip().lower() == ta_l
+    ]
 
 
-def _add_row(row_data: dict) -> int:
-    if not EXCEL_PATH:
-        raise ValueError("EXCEL_PATH is not configured in .env")
-    if not os.path.exists(EXCEL_PATH):
-        raise FileNotFoundError(f"Excel file not found: {EXCEL_PATH}")
-    wb = _open_wb(EXCEL_PATH)
-    if "Database" not in wb.sheetnames:
-        wb.create_sheet("Database")
-    ws = wb["Database"]
-    headers = _get_headers(ws)
-    if not any(headers):
-        for col, h in enumerate(DB_COLUMNS, 1):
-            ws.cell(row=1, column=col, value=h)
-        headers = DB_COLUMNS
-    # Always start from row 3 minimum (row 1 = headers, row 2 = annotation)
-    next_row = max(ws.max_row + 1, 3)
-    if "No" in headers:
-        ws.cell(row=next_row, column=headers.index("No") + 1, value=next_row - 2)
-    for col_name, value in row_data.items():
-        if col_name == "Profile":
-            continue  # handled separately below
-        if col_name in headers:
-            ws.cell(row=next_row, column=headers.index(col_name) + 1, value=value)
-    # Profile: clickable hyperlink — display text = candidate name, target = local file path
-    if "Profile" in headers and row_data.get("Profile"):
-        file_path_val = str(row_data["Profile"])
-        display = str(row_data.get("Candidate name") or os.path.basename(file_path_val))
-        url = "file:///" + file_path_val.replace("\\", "/")
-        cell = ws.cell(row=next_row, column=headers.index("Profile") + 1, value=display)
-        cell.hyperlink = url
-        cell.font = Font(color="0563C1", underline="single")
-    wb.save(EXCEL_PATH)
-    wb.close()
-    return next_row
+def _add_personal_row(row_data: dict) -> dict:
+    row = {col: row_data.get(col) for col in DB_COLUMNS}
+    row["No"] = _next_no(personal_db)
+    row["_id"] = uuid.uuid4().hex
+    personal_db.append(row)
+    _persist_personal()
+    return row
 
 
-def _overwrite_row(row_number: int, row_data: dict):
-    wb = _open_wb(EXCEL_PATH)
-    ws = wb["Database"]
-    headers = _get_headers(ws)
-    for col_name, value in row_data.items():
-        if col_name == "Profile":
-            continue
-        if col_name in headers:
-            ws.cell(row=row_number, column=headers.index(col_name) + 1, value=value)
-    if "Profile" in headers and row_data.get("Profile"):
-        file_path_val = str(row_data["Profile"])
-        display = str(row_data.get("Candidate name") or os.path.basename(file_path_val))
-        url = "file:///" + file_path_val.replace("\\", "/")
-        cell = ws.cell(row=row_number, column=headers.index("Profile") + 1, value=display)
-        cell.hyperlink = url
-        cell.font = Font(color="0563C1", underline="single")
-    wb.save(EXCEL_PATH)
-    wb.close()
+def _overwrite_personal_row(row_id: str, row_data: dict) -> bool:
+    for row in personal_db:
+        if row.get("_id") == row_id:
+            for col in DB_COLUMNS:
+                if col != "No" and col in row_data:
+                    row[col] = row_data[col]
+            _persist_personal()
+            return True
+    return False
 
 
-# ---------------------------------------------------------------------------
-# Skill 2 — Processed-files tracking
-# ---------------------------------------------------------------------------
-def _load_processed() -> set:
-    if os.path.exists(PROCESSED_FILES_LOG):
-        with open(PROCESSED_FILES_LOG) as f:
-            return set(json.load(f))
-    return set()
-
-
-def _mark_processed(file_path: str):
-    processed = _load_processed()
-    processed.add(os.path.normpath(file_path))
-    with open(PROCESSED_FILES_LOG, "w") as f:
-        json.dump(list(processed), f, indent=2)
-
-
-# ---------------------------------------------------------------------------
-# Skill 2 — Core CV processing pipeline
-# ---------------------------------------------------------------------------
-def _build_row_data(cv: _CVFields, folder: dict, file_path: str) -> dict:
+def _build_row_data(cv: _CVFields, folder_name: str, source: str, referrer: str | None, filename: str) -> dict:
+    parts = _split_folder_name(folder_name) or {}
     return {
-        "Request code": folder.get("request_code"),
-        "Candidate name": cv.candidate_name,
-        "Processed Team": folder.get("processed_team"),
-        "Processed Position": folder.get("processed_position"),
-        "Entry date": datetime.now().strftime("%Y-%m-%d"),
-        "Source": folder.get("source"),
-        "Referrer": None,  # left blank; recruiter fills if source = Referral
-        "Latest company": cv.latest_company,
-        "Latest position": cv.latest_position,
-        "Email": cv.email,
-        "Phone": cv.phone,
-        "TA Incharge": TA_INCHARGE,
-        "Profile": os.path.normpath(file_path),
+        "Request code":       parts.get("request_code"),
+        "Candidate name":     cv.candidate_name,
+        "Processed Team":     parts.get("processed_team"),
+        "Processed Position": parts.get("processed_position"),
+        "Entry date":         datetime.now().strftime("%Y-%m-%d"),
+        "Source":             source,
+        "Referrer":           referrer if source == "Referral" else None,
+        "Latest company":     cv.latest_company,
+        "Latest position":    cv.latest_position,
+        "Email":               cv.email,
+        "Phone":               cv.phone,
+        "TA Incharge":         TA_INCHARGE,
+        "Profile":             f"{filename} - uploaded {datetime.now().strftime('%Y-%m-%d')}",
     }
 
 
-def _process_cv(file_path: str) -> dict:
-    file_path = _resolve_path(file_path)
-    result: dict = {"file": os.path.basename(file_path), "status": None, "messages": []}
+# ---------------------------------------------------------------------------
+# Skill 2 — Core CV processing pipeline (operates on uploaded bytes)
+# ---------------------------------------------------------------------------
+def _process_cv(filename: str, data: bytes, folder_name: str, subfolder: str,
+                 referrer: str | None = None) -> dict:
+    result: dict = {"file": filename, "status": None, "messages": []}
 
     try:
-        text = _extract_cv_text(file_path)
+        text = _extract_cv_text_bytes(filename, data)
     except Exception as e:
         result.update(status="error", messages=[f"Cannot extract text: {e}"])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()})
+        _push_alert({**result, "timestamp": datetime.now().isoformat()})
         return result
 
     if not text.strip():
         result.update(status="error", messages=["CV appears empty or image-only — could not extract text."])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()})
+        _push_alert({**result, "timestamp": datetime.now().isoformat()})
         return result
 
-    folder = _parse_folder_path(file_path)
+    folder = _split_folder_name(folder_name)
     if not folder:
-        result.update(status="error", messages=["Could not parse folder path. Expected: [Dept] - [Position] - [JobCode]/[SubFolder]/file"])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()})
+        result.update(status="error", messages=["Could not parse job folder name. Expected: '[Dept] - [Position] - [JobCode]'"])
+        _push_alert({**result, "timestamp": datetime.now().isoformat()})
         return result
 
     try:
         cv = _parse_cv_with_llm(text)
     except Exception as e:
         result.update(status="error", messages=[f"LLM extraction failed: {e}"])
-        _alerts.append({**result, "timestamp": datetime.now().isoformat()})
+        _push_alert({**result, "timestamp": datetime.now().isoformat()})
         return result
 
     missing = [label for label, val in [
@@ -370,99 +294,53 @@ def _process_cv(file_path: str) -> dict:
         ("Latest company", cv.latest_company), ("Latest position", cv.latest_position),
     ] if not val]
     if missing:
-        result["messages"].append(f"⚠ Missing fields (left blank): {', '.join(missing)}")
+        result["messages"].append(f"Warning - Missing fields (left blank): {', '.join(missing)}")
+
+    new_job = " - ".join(filter(None, [folder.get("processed_team"), folder.get("processed_position"), folder.get("request_code")]))
 
     if cv.email:
         dup = _check_duplicate(cv.email, folder["request_code"])
         if dup:
+            existing_job = " - ".join(filter(None, [dup.get("Processed Team"), dup.get("Processed Position"), folder["request_code"]]))
             result.update(status="duplicate", messages=result["messages"] + [
-                f"⚠ DUPLICATE: {cv.candidate_name or 'Unknown'} ({cv.email}) already exists "
-                f"in row {dup['row_number']} for {folder['request_code']}. "
-                "Use resolve_duplicate to keep or overwrite."
-            ])
-            _alerts.append({
-                **result, "timestamp": datetime.now().isoformat(),
-                "file_path": os.path.normpath(file_path),
-                "cv_fields": cv.model_dump(), "folder_info": folder,
-                "duplicate_row": dup["row_number"],
-            })
-            _mark_processed(file_path)
+                f"DUPLICATE: {cv.candidate_name or 'Unknown'} ({cv.email}) already exists for {folder['request_code']}. "
+                "Use resolve_duplicate to keep, overwrite, or add as new."
+            ], email=cv.email, candidate_name=cv.candidate_name, request_code=folder["request_code"],
+               new_job=new_job, new_source=subfolder, existing_job=existing_job)
+            _push_alert({**result, "timestamp": datetime.now().isoformat(),
+                "cv_fields": cv.model_dump(), "folder_name": folder_name, "subfolder": subfolder,
+                "referrer": referrer, "filename": filename, "duplicate_id": dup["_id"]})
             return result
 
         cross_role = _check_cross_role_duplicate(cv.email, folder["request_code"])
         if cross_role:
-            codes = ", ".join(r["request_code"] for r in cross_role)
+            codes = ", ".join(r["Request code"] for r in cross_role)
+            first = cross_role[0]
+            existing_job = " - ".join(filter(None, [first.get("Processed Team"), first.get("Processed Position"), first.get("Request code")]))
             result.update(status="cross_role_duplicate", messages=result["messages"] + [
-                f"⚠ CROSS-ROLE: {cv.candidate_name or 'This candidate'} ({cv.email}) is already "
+                f"CROSS-ROLE: {cv.candidate_name or 'This candidate'} ({cv.email}) is already "
                 f"in your pipeline for another role ({codes}). "
-                "Use resolve_cross_role to add a new row or skip."
-            ])
-            _alerts.append({
-                **result, "timestamp": datetime.now().isoformat(),
-                "file_path": os.path.normpath(file_path),
-                "cv_fields": cv.model_dump(), "folder_info": folder,
-                "existing_roles": [r["request_code"] for r in cross_role],
-            })
-            _mark_processed(file_path)
+                "Use resolve_duplicate to keep or add as new."
+            ], email=cv.email, candidate_name=cv.candidate_name, request_code=folder["request_code"],
+               new_job=new_job, new_source=subfolder, existing_job=existing_job)
+            _push_alert({**result, "timestamp": datetime.now().isoformat(),
+                "cv_fields": cv.model_dump(), "folder_name": folder_name, "subfolder": subfolder,
+                "referrer": referrer, "filename": filename,
+                "existing_roles": [r["Request code"] for r in cross_role]})
             return result
 
-    row_data = _build_row_data(cv, folder, file_path)
+    row_data = _build_row_data(cv, folder_name, subfolder, referrer, filename)
     if not cv.email:
         row_data["Note"] = "Email missing - please fill in manually"
-    if EXCEL_PATH:
-        try:
-            new_row = _add_row(row_data)
-            result.update(status="success")
-            result["messages"].append(f"✓ Added {cv.candidate_name or 'candidate'} to database at row {new_row}.")
-        except Exception as e:
-            result.update(status="error")
-            result["messages"].append(f"Excel write failed: {e}")
-    else:
-        result.update(status="no_excel")
-        result["messages"].append("EXCEL_PATH not set — candidate NOT written to database.")
-
-    _alerts.append({**result, "timestamp": datetime.now().isoformat()})
-    _mark_processed(file_path)
+    new_row = _add_personal_row(row_data)
+    result.update(status="success")
+    result["messages"].append(f"Added {cv.candidate_name or 'candidate'} to database (No. {new_row['No']}).")
+    _push_alert({**result, "timestamp": datetime.now().isoformat()})
     return result
 
 
 # ---------------------------------------------------------------------------
-# Skill 2 — Background CV watcher
-# ---------------------------------------------------------------------------
-def _scan_for_new_cvs() -> list[str]:
-    processed = _load_processed()
-    new_files = []
-    if not os.path.isdir(JOBS_BASE_DIR):
-        return []
-    for job_folder in os.listdir(JOBS_BASE_DIR):
-        job_path = os.path.join(JOBS_BASE_DIR, job_folder)
-        if not os.path.isdir(job_path):
-            continue
-        for sub in JOB_SUB_FOLDERS:
-            sub_path = os.path.join(job_path, sub)
-            if not os.path.isdir(sub_path):
-                continue
-            for fname in os.listdir(sub_path):
-                if fname.lower().endswith((".pdf", ".docx")):
-                    fpath = os.path.normpath(os.path.join(sub_path, fname))
-                    if fpath not in processed:
-                        new_files.append(fpath)
-    return new_files
-
-
-async def _cv_watcher_loop():
-    loop = asyncio.get_event_loop()
-    while True:
-        try:
-            for fpath in _scan_for_new_cvs():
-                await loop.run_in_executor(None, _process_cv, fpath)
-        except Exception as e:
-            _alerts.append({"status": "watcher_error", "messages": [str(e)], "timestamp": datetime.now().isoformat()})
-        await asyncio.sleep(CV_POLL_INTERVAL)
-
-
-# ---------------------------------------------------------------------------
-# Skill 3 — Sync state tracking
+# Skill 3 — Sync helpers (personal DB -> team DB, both in-memory)
 # ---------------------------------------------------------------------------
 def _row_key(row: dict) -> str:
     email = str(row.get("Email") or "").strip().lower()
@@ -470,168 +348,27 @@ def _row_key(row: dict) -> str:
     return f"{email}|{code}"
 
 
-def _load_sync_state() -> dict:
-    if os.path.exists(SYNC_STATE_FILE):
-        with open(SYNC_STATE_FILE) as f:
-            return json.load(f)
-    return {"last_sync": None, "rows": {}}
-
-
-def _save_sync_state(personal_rows: list[dict]):
-    state = {
-        "last_sync": datetime.now().isoformat(),
-        "rows": {
-            _row_key(r): {k: str(v) if v is not None else None for k, v in r.items()}
-            for r in personal_rows
-            if _row_key(r) not in ("|", "")
-        },
-    }
-    with open(SYNC_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
-
-
 def _row_changed_vs_snapshot(current: dict, snapshot: dict) -> bool:
-    for col in SYNC_COLUMNS:
-        if str(current.get(col) or "").strip() != str(snapshot.get(col) or "").strip():
-            return True
-    return False
+    return any(str(current.get(c) or "").strip() != str(snapshot.get(c) or "").strip() for c in SYNC_COLUMNS)
 
 
-# ---------------------------------------------------------------------------
-# Skill 3 — Personal & team DB readers
-# ---------------------------------------------------------------------------
-def _read_personal_db() -> list[dict]:
-    if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
-        return []
-    wb = _open_wb(EXCEL_PATH, read_only=True)
-    if "Database" not in wb.sheetnames:
-        wb.close()
-        return []
-    ws = wb["Database"]
-    headers = None
-    rows = []
-    for row in ws.iter_rows(values_only=True):
-        if headers is None:
-            headers = [str(c).strip() if c is not None else "" for c in row]
-            continue
-        if not any(c is not None for c in row):
-            continue
-        rows.append(dict(zip(headers, row)))
-    wb.close()
-    return rows
+def _add_team_row(row_data: dict) -> dict:
+    row = {col: row_data.get(col) for col in SYNC_COLUMNS}
+    row["No"] = _next_no(team_db)
+    row["Profile"] = None
+    row["_id"] = uuid.uuid4().hex
+    team_db.append(row)
+    _persist_team()
+    return row
 
 
-def _read_team_db() -> dict[str, tuple[int, dict]]:
-    """Returns {row_key: (excel_row_number, row_dict)} for every data row in team DB."""
-    if not TEAM_EXCEL_PATH or not os.path.exists(TEAM_EXCEL_PATH):
-        return {}
-    wb = _open_wb(TEAM_EXCEL_PATH, read_only=True)
-    if "Database" not in wb.sheetnames:
-        wb.close()
-        return {}
-    ws = wb["Database"]
-    lookup: dict[str, tuple[int, dict]] = {}
-    headers = None
-    for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-        if headers is None:
-            headers = [str(c).strip() if c is not None else "" for c in row]
-            continue
-        if not any(c is not None for c in row):
-            continue
-        row_dict = dict(zip(headers, row))
-        key = _row_key(row_dict)
-        if key and key != "|":
-            lookup[key] = (row_idx, row_dict)
-    wb.close()
-    return lookup
-
-
-# ---------------------------------------------------------------------------
-# Skill 3 — Team DB write operations
-# ---------------------------------------------------------------------------
-def _add_team_row(row_data: dict) -> int:
-    if not TEAM_EXCEL_PATH or not os.path.exists(TEAM_EXCEL_PATH):
-        raise FileNotFoundError(f"Team Excel not found: {TEAM_EXCEL_PATH}")
-    wb = _open_wb(TEAM_EXCEL_PATH)
-    if "Database" not in wb.sheetnames:
-        wb.create_sheet("Database")
-    ws = wb["Database"]
-    headers = _get_headers(ws)
-    if not any(headers):
-        for col, h in enumerate(DB_COLUMNS, 1):
-            ws.cell(row=1, column=col, value=h)
-        headers = DB_COLUMNS
-    next_row = max(ws.max_row + 1, 3)
-    if "No" in headers:
-        ws.cell(row=next_row, column=headers.index("No") + 1, value=next_row - 2)
-    for col_name in SYNC_COLUMNS:
-        value = row_data.get(col_name)
-        if col_name in headers and value is not None:
-            ws.cell(row=next_row, column=headers.index(col_name) + 1, value=value)
-    wb.save(TEAM_EXCEL_PATH)
-    wb.close()
-    return next_row
-
-
-def _update_team_row(row_number: int, changed_fields: dict):
-    """Write only the changed fields into the existing team DB row."""
-    wb = _open_wb(TEAM_EXCEL_PATH)
-    ws = wb["Database"]
-    headers = _get_headers(ws)
+def _update_team_row(row: dict, changed_fields: dict) -> None:
     for field, vals in changed_fields.items():
-        if field in headers:
-            ws.cell(row=row_number, column=headers.index(field) + 1, value=vals["mine"])
-    wb.save(TEAM_EXCEL_PATH)
-    wb.close()
+        row[field] = vals["mine"]
+    _persist_team()
 
 
-def _write_conflict_log(conflicts: list[dict]):
-    """Append conflict rows to the Conflict Log sheet with red highlighting."""
-    wb = _open_wb(TEAM_EXCEL_PATH)
-    if CONFLICT_SHEET not in wb.sheetnames:
-        ws_conflict = wb.create_sheet(CONFLICT_SHEET)
-        for col, h in enumerate(CONFLICT_LOG_COLUMNS, 1):
-            cell = ws_conflict.cell(row=1, column=col, value=h)
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(fill_type="solid", fgColor="FFD700")
-    else:
-        ws_conflict = wb[CONFLICT_SHEET]
-
-    red = PatternFill(fill_type="solid", fgColor="FF6B6B")
-    next_row = ws_conflict.max_row + 1
-    for c in conflicts:
-        values = [
-            c["timestamp"], c["email"], c["request_code"], c["candidate_name"],
-            c["field"], c["my_value"], c["team_value"], c["my_ta"], c["team_ta"],
-        ]
-        for col, val in enumerate(values, 1):
-            cell = ws_conflict.cell(row=next_row, column=col, value=val)
-            cell.fill = red
-        # Also add a comment on the Email cell in Database sheet to surface the conflict inline
-        if "Database" in wb.sheetnames:
-            ws_db = wb["Database"]
-            db_headers = _get_headers(ws_db)
-            # Find the conflicted row in Database by scanning (best effort)
-            if "Email" in db_headers:
-                email_col = db_headers.index("Email") + 1
-                for db_row in range(2, ws_db.max_row + 1):
-                    cell_val = ws_db.cell(row=db_row, column=email_col).value
-                    if str(cell_val or "").strip().lower() == c["email"].lower():
-                        target = ws_db.cell(row=db_row, column=email_col)
-                        note = f"Sync conflict {c['timestamp'][:10]}: field '{c['field']}' differs (mine: {c['my_value']} | team: {c['team_value']}). Check Conflict Log sheet."
-                        target.comment = Comment(note, "Recruiter Agent")
-                        break
-        next_row += 1
-
-    wb.save(TEAM_EXCEL_PATH)
-    wb.close()
-
-
-# ---------------------------------------------------------------------------
-# Skill 3 — Sync logic
-# ---------------------------------------------------------------------------
 def _get_changed_fields(my_row: dict, team_row: dict) -> dict:
-    """Return {field: {mine: ..., theirs: ...}} for every field that differs."""
     return {
         col: {"mine": str(my_row.get(col) or "").strip(), "theirs": str(team_row.get(col) or "").strip()}
         for col in SYNC_COLUMNS
@@ -639,75 +376,47 @@ def _get_changed_fields(my_row: dict, team_row: dict) -> dict:
     }
 
 
-def _validate_excel(path: str) -> bool:
-    """Return True if the file can be opened as a valid Excel workbook."""
-    try:
-        wb = _open_wb(path, read_only=True)
-        wb.close()
-        return True
-    except Exception:
-        return False
-
-
 def _run_sync() -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     result = {"date": today, "timestamp": datetime.now().isoformat(),
-               "added": 0, "updated": 0, "skipped": 0, "conflicts": 0, "errors": []}
+              "added": 0, "updated": 0, "skipped": 0, "conflicts": 0, "errors": []}
 
-    if not TEAM_EXCEL_PATH or not os.path.exists(TEAM_EXCEL_PATH):
-        result["errors"].append(f"TEAM_EXCEL_PATH not found: {TEAM_EXCEL_PATH}")
-        return result
-    if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
-        result["errors"].append(f"Personal EXCEL_PATH not found: {EXCEL_PATH}")
-        return result
-    if not _validate_excel(TEAM_EXCEL_PATH):
-        result["errors"].append(
-            f"Team Excel file is not a valid workbook: {TEAM_EXCEL_PATH}. "
-            "Open the file in Excel, add a sheet named 'Database', and save it once to make it a valid .xlsm file."
-        )
-        return result
-    if not _validate_excel(EXCEL_PATH):
-        result["errors"].append(f"Personal Excel file is not a valid workbook: {EXCEL_PATH}.")
-        return result
+    team_lookup: dict[str, dict] = {_row_key(r): r for r in team_db if _row_key(r) not in ("|", "")}
+    snapshot = _sync_state.get("rows", {})
 
-    personal_rows = _read_personal_db()
-    team_lookup = _read_team_db()
-    snapshot = _load_sync_state().get("rows", {})
-
-    # Email-only lookup for cross-TA cross-role detection (Case 4)
     email_lookup: dict[str, list[dict]] = {}
-    for _k, (_rn, _rd) in team_lookup.items():
-        _em = str(_rd.get("Email") or "").strip().lower()
-        if _em:
-            email_lookup.setdefault(_em, []).append({
-                "request_code": str(_rd.get("Request code") or "").strip(),
-                "team_ta": str(_rd.get("TA Incharge") or "").strip().lower(),
-                "team_ta_display": str(_rd.get("TA Incharge") or ""),
+    for row in team_db:
+        em = str(row.get("Email") or "").strip().lower()
+        if em:
+            email_lookup.setdefault(em, []).append({
+                "request_code": str(row.get("Request code") or "").strip(),
+                "team_ta": str(row.get("TA Incharge") or "").strip().lower(),
+                "team_ta_display": str(row.get("TA Incharge") or ""),
             })
 
-    # Determine which personal rows to sync: added today OR changed since last sync
     to_sync = []
-    for row in personal_rows:
+    for row in personal_db:
         entry_date = str(row.get("Entry date") or "").strip()[:10]
         key = _row_key(row)
         if not key or key == "|":
             continue
-        if entry_date == today:
+        if entry_date == today or (key in snapshot and _row_changed_vs_snapshot(row, snapshot[key])):
             to_sync.append(row)
-        elif key in snapshot and _row_changed_vs_snapshot(row, snapshot[key]):
-            to_sync.append(row)
+
+    def _snapshot_now() -> dict:
+        return {_row_key(r): {k: str(v) if v is not None else None for k, v in r.items()}
+                for r in personal_db if _row_key(r) not in ("|", "")}
 
     if not to_sync:
-        _save_sync_state(personal_rows)
+        _sync_state["last_sync"] = datetime.now().isoformat()
+        _sync_state["rows"] = _snapshot_now()
+        _persist_sync_state()
         summary = f"Daily sync {today}: No changes to sync today."
-        _alerts.append({"status": "sync_complete", "messages": [summary],
-                        "timestamp": result["timestamp"], "details": result})
+        _push_alert({"status": "sync_complete", "messages": [summary],
+                     "timestamp": result["timestamp"], "details": result})
         return result
 
-    locked = False
     for my_row in to_sync:
-        if locked:
-            break
         key = _row_key(my_row)
         email = str(my_row.get("Email") or "").strip().lower()
         request_code = str(my_row.get("Request code") or "").strip()
@@ -715,7 +424,6 @@ def _run_sync() -> dict:
         serialized_row = {k: str(v) if v is not None else None for k, v in my_row.items()}
         try:
             if key not in team_lookup:
-                # Case 4: same email + different job code + different TA already in team DB
                 cross_ta = [
                     e for e in email_lookup.get(email, [])
                     if e["request_code"] != request_code
@@ -724,27 +432,21 @@ def _run_sync() -> dict:
                 if cross_ta:
                     codes = ", ".join(e["request_code"] for e in cross_ta)
                     tas = ", ".join(sorted(set(e["team_ta_display"] for e in cross_ta)))
-                    _alerts.append({
-                        "status": "sync_cross_ta_pending",
-                        "timestamp": datetime.now().isoformat(),
-                        "email": email,
-                        "request_code": request_code,
-                        "candidate_name": candidate_name,
-                        "team_ta": tas,
-                        "row_data": serialized_row,
-                        "messages": [
-                            f"⚠ Cross-TA: {candidate_name} ({email}) is applying for multiple roles across the team — "
-                            f"{tas} already has this candidate for {codes}. "
-                            "Use resolve_sync_conflict to sync as new row or skip."
-                        ],
+                    _push_alert({
+                        "status": "sync_cross_ta_pending", "timestamp": datetime.now().isoformat(),
+                        "email": email, "request_code": request_code, "candidate_name": candidate_name,
+                        "team_ta": tas, "row_data": serialized_row,
+                        "messages": [f"Cross-TA: {candidate_name} ({email}) applying across team - "
+                                     f"{tas} already has this candidate for {codes}. "
+                                     "Use resolve_sync_conflict to sync or skip."],
                     })
                     result["conflicts"] += 1
                 else:
-                    _add_team_row(my_row)
-                    team_lookup[key] = (-1, my_row)
+                    new_team_row = _add_team_row(my_row)
+                    team_lookup[key] = new_team_row
                     result["added"] += 1
             else:
-                team_row_num, team_row = team_lookup[key]
+                team_row = team_lookup[key]
                 changed = _get_changed_fields(my_row, team_row)
                 if not changed:
                     result["skipped"] += 1
@@ -752,49 +454,34 @@ def _run_sync() -> dict:
                 team_ta = str(team_row.get("TA Incharge") or "").strip().lower()
                 my_ta = (TA_INCHARGE or "").lower().strip()
                 if team_ta != my_ta:
-                    # Case 3: same email + same job code + different TA → pending alert
-                    _alerts.append({
-                        "status": "sync_conflict_pending",
-                        "timestamp": datetime.now().isoformat(),
-                        "email": email,
-                        "request_code": request_code,
-                        "candidate_name": candidate_name,
-                        "team_ta": str(team_row.get("TA Incharge") or ""),
-                        "row_data": serialized_row,
-                        "messages": [
-                            f"⚠ Sync conflict: {candidate_name} ({email}) for {request_code} — "
-                            f"{team_row.get('TA Incharge')} already has this candidate in the team DB. "
-                            "Use resolve_sync_conflict to sync as new row or skip."
-                        ],
+                    _push_alert({
+                        "status": "sync_conflict_pending", "timestamp": datetime.now().isoformat(),
+                        "email": email, "request_code": request_code, "candidate_name": candidate_name,
+                        "team_ta": str(team_row.get("TA Incharge") or ""), "row_data": serialized_row,
+                        "messages": [f"Sync conflict: {candidate_name} ({email}) for {request_code} - "
+                                     f"{team_row.get('TA Incharge')} already has this candidate in team DB. "
+                                     "Use resolve_sync_conflict."],
                     })
                     result["conflicts"] += 1
                 else:
-                    _update_team_row(team_row_num, changed)
+                    _update_team_row(team_row, changed)
                     result["updated"] += 1
-        except PermissionError:
-            # Case 6: team DB file is open/locked by another user
-            error_msg = "Team database is currently open by another user. Please close it and try again."
-            result["errors"].append(error_msg)
-            _alerts.append({"status": "sync_error", "messages": [error_msg],
-                            "timestamp": datetime.now().isoformat()})
-            locked = True
         except Exception as e:
             result["errors"].append(f"{candidate_name} ({email}): {e}")
 
-    _save_sync_state(personal_rows)
+    _sync_state["last_sync"] = datetime.now().isoformat()
+    _sync_state["rows"] = _snapshot_now()
+    _persist_sync_state()
 
     summary = (f"Daily sync {today}: {result['added']} added, {result['updated']} updated, "
                f"{result['skipped']} skipped, {result['conflicts']} pending conflicts.")
     if result["errors"]:
         summary += f" {len(result['errors'])} error(s)."
-    _alerts.append({"status": "sync_complete", "messages": [summary],
-                    "timestamp": result["timestamp"], "details": result})
+    _push_alert({"status": "sync_complete", "messages": [summary],
+                 "timestamp": result["timestamp"], "details": result})
     return result
 
 
-# ---------------------------------------------------------------------------
-# Skill 3 — Daily sync scheduler
-# ---------------------------------------------------------------------------
 def _get_scheduled_time() -> tuple[int, int] | None:
     return SYNC_SCHEDULE.get((TA_INCHARGE or "").lower().strip())
 
@@ -812,26 +499,23 @@ async def _daily_sync_scheduler():
                     await loop.run_in_executor(None, _run_sync)
                     last_sync_date = now.date()
         except Exception as e:
-            _alerts.append({"status": "sync_error", "messages": [f"Scheduler error: {e}"],
-                            "timestamp": datetime.now().isoformat()})
-        await asyncio.sleep(30)  # check every 30 s
+            _push_alert({"status": "sync_error", "messages": [f"Scheduler error: {e}"],
+                         "timestamp": datetime.now().isoformat()})
+        await asyncio.sleep(30)  # check every 30s
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — start both background tasks
+# Lifespan — background sync scheduler only (no filesystem watcher anymore)
 # ---------------------------------------------------------------------------
 @contextlib.asynccontextmanager
 async def _lifespan(app_instance):
-    cv_task = asyncio.create_task(_cv_watcher_loop())
     sync_task = asyncio.create_task(_daily_sync_scheduler())
     yield
-    cv_task.cancel()
     sync_task.cancel()
-    for t in (cv_task, sync_task):
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +527,7 @@ app = GreenNodeAgentBaseApp(
         Middleware(
             CORSMiddleware,
             allow_origins=["*"],
-            allow_methods=["POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["*"],
         )
     ],
@@ -866,35 +550,62 @@ llm = ChatOpenAI(model=LLM_MODEL, base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 # ---------------------------------------------------------------------------
 @tool
 def create_job_folder(folder_name: str) -> str:
-    """Create a job folder with standard recruitment sub-folders: LinkedIn, VNG Careers, Referral, TA Search, Others.
+    """Create a job folder record with standard recruitment sub-folders: LinkedIn, VNG Careers, Referral, TA Search, Others.
 
     Args:
         folder_name: Name of the job folder (e.g. 'ZDA - Data Scientist - 26-ZDA-3117').
     """
-    try:
-        job_path = _safe_join(JOBS_BASE_DIR, folder_name)
-    except ValueError:
-        return f"Invalid folder name '{folder_name}': must not escape the jobs directory."
-    if os.path.exists(job_path):
+    if any(f["name"] == folder_name for f in job_folders):
         return f"Folder '{folder_name}' already exists."
-    os.makedirs(job_path)
-    for sub in JOB_SUB_FOLDERS:
-        os.makedirs(os.path.join(job_path, sub))
+    job_folders.append({
+        "name": folder_name,
+        "sub_folders": JOB_SUB_FOLDERS,
+        "created_at": datetime.now().isoformat(),
+    })
+    _persist_folders()
     return f"Created '{folder_name}' with sub-folders: {', '.join(JOB_SUB_FOLDERS)}."
 
 
 # ---------------------------------------------------------------------------
-# LangGraph tools — Skill 2
+# LangGraph tools — Skill 2 (alerts + conflict resolution)
 # ---------------------------------------------------------------------------
-@tool
-def process_cv_file(file_path: str) -> str:
-    """Manually process a CV file (PDF or DOCX) and add the candidate to the personal recruitment database.
+_RESOLVABLE_STATUSES = ("duplicate", "cross_role_duplicate", "sync_conflict_pending", "sync_cross_ta_pending")
 
-    Args:
-        file_path: Full path to the CV file.
-    """
-    result = _process_cv(file_path)
-    return "\n".join([f"Status: {result['status']}"] + result["messages"])
+
+def _format_conflict_alert(alert: dict) -> str | None:
+    """Build a fully-substituted conflict block (including CONFLICT_DATA) directly from
+    the alert's own fields, so the LLM never has to construct or retype the JSON itself."""
+    status = alert.get("status")
+    if status in ("duplicate", "cross_role_duplicate"):
+        email = alert.get("email") or ""
+        name = alert.get("candidate_name") or "Unknown"
+        request_code = alert.get("request_code") or ""
+        existing_job = alert.get("existing_job") or ""
+        new_job = alert.get("new_job") or ""
+        if status == "duplicate":
+            issue = f"{name} already has a CV on file for this exact role ({request_code})."
+        else:
+            codes = ", ".join(alert.get("existing_roles") or [])
+            issue = f"{name} is already in your pipeline for another role ({codes})."
+        data = json.dumps({"email": email, "request_code": request_code, "type": status})
+        return (f"⚠️ CONFLICT: {name} ({email})\n"
+                f"Job: {request_code}\n"
+                f"Already in: {existing_job}\n"
+                f"New CV in: {new_job}\n"
+                f"Issue: {issue}\n"
+                f"CONFLICT_DATA:{data}")
+    if status in ("sync_conflict_pending", "sync_cross_ta_pending"):
+        email = alert.get("email") or ""
+        name = alert.get("candidate_name") or "Unknown"
+        request_code = alert.get("request_code") or ""
+        team_ta = alert.get("team_ta") or ""
+        issue = f"{team_ta} already has this candidate in the team database for {request_code}."
+        data = json.dumps({"email": email, "request_code": request_code, "type": "sync_conflict"})
+        return (f"⚠️ CONFLICT: {name} ({email})\n"
+                f"Job: {request_code}\n"
+                f"Issue: {issue}\n"
+                f"CONFLICT_DATA:{data}")
+    return None
 
 
 @tool
@@ -904,83 +615,90 @@ def get_alerts() -> str:
         return "No pending alerts."
     lines = []
     for i, alert in enumerate(_alerts[-20:], 1):
-        lines.append(f"[{i}] {alert.get('timestamp', '')[:19]} | {alert.get('status', '')} | {alert.get('file', 'system')}")
-        for msg in alert.get("messages", []):
-            lines.append(f"    {msg}")
+        status = alert.get("status", "")
+        block = _format_conflict_alert(alert) if status in _RESOLVABLE_STATUSES else None
+        if block:
+            lines.append(f"[{i}] {alert.get('timestamp', '')[:19]}")
+            lines.append(block)
+        else:
+            lines.append(f"[{i}] {alert.get('timestamp', '')[:19]} | {status} | {alert.get('file', 'system')}")
+            for msg in alert.get("messages", []):
+                lines.append(f"    {msg}")
     return "\n".join(lines)
 
 
 @tool
 def clear_alerts() -> str:
     """Clear all pending alerts."""
-    _alerts.clear()
+    _clear_alerts()
     return "All alerts cleared."
 
 
 @tool
 def resolve_duplicate(email: str, request_code: str, action: str) -> str:
-    """Resolve a duplicate candidate detected during CV processing.
+    """Resolve a duplicate or cross-role duplicate candidate detected during CV processing.
 
     Args:
         email: The candidate's email address.
-        request_code: The job request code (e.g. '26-ZDA-3117').
-        action: 'keep' to keep the existing row, or 'overwrite' to replace with new CV data.
+        request_code: The job request code of the NEW CV being processed.
+        action: 'keep' to keep the existing record unchanged, 'overwrite' to replace the
+            existing record with the new CV data (same-role duplicates only), or 'add' to
+            add the new CV as a separate new row without touching the existing record.
     """
-    pending = next(
-        (a for a in _alerts
-         if a.get("status") == "duplicate"
-         and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
-         and str(a.get("folder_info", {}).get("request_code") or "") == request_code.strip()),
-        None,
-    )
+    pending = next((a for a in _alerts if a.get("status") in ("duplicate", "cross_role_duplicate")
+                    and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
+                    and str(a.get("request_code") or "") == request_code.strip()), None)
     if not pending:
         return f"No pending duplicate for '{email}' / '{request_code}'."
     name = pending["cv_fields"].get("candidate_name") or "Unknown"
-    row_num = pending["duplicate_row"]
-    if action.lower() == "keep":
-        _alerts.remove(pending)
-        return f"Kept existing row {row_num} for {name}. No changes made."
-    if action.lower() == "overwrite":
-        row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_info"], pending["file_path"])
-        try:
-            _overwrite_row(row_num, row_data)
-        except Exception as e:
-            return f"Overwrite failed: {e}"
-        _alerts.remove(pending)
-        return f"Overwrote row {row_num} with updated data for {name}."
-    return "Invalid action. Use 'keep' or 'overwrite'."
+    is_cross_role = pending.get("status") == "cross_role_duplicate"
+    action = action.lower()
+    if action == "keep":
+        _remove_alert(pending)
+        return f"Kept existing record for {name}. No changes made."
+    if action == "overwrite":
+        if is_cross_role:
+            return "Cannot overwrite: the existing record is for a different role. Use 'add' instead."
+        row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_name"],
+                                    pending["subfolder"], pending.get("referrer"), pending["filename"])
+        ok = _overwrite_personal_row(pending["duplicate_id"], row_data)
+        if not ok:
+            return "Overwrite failed: original record no longer exists."
+        _remove_alert(pending)
+        return f"Overwrote existing record with updated data for {name}."
+    if action == "add":
+        row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_name"],
+                                    pending["subfolder"], pending.get("referrer"), pending["filename"])
+        new_row = _add_personal_row(row_data)
+        _remove_alert(pending)
+        return f"Added {name} as new row (No. {new_row['No']})."
+    return "Invalid action. Use 'keep', 'overwrite', or 'add'."
 
 
 @tool
 def resolve_cross_role(email: str, new_request_code: str, action: str) -> str:
-    """Resolve a cross-role duplicate: same candidate already in your pipeline for a different role.
+    """Resolve a cross-role duplicate: same candidate already in pipeline for a different role.
 
     Args:
         email: The candidate's email address.
         new_request_code: The new job request code being processed.
         action: 'add' to add the new row anyway, or 'skip' to not add.
     """
-    pending = next(
-        (a for a in _alerts
-         if a.get("status") == "cross_role_duplicate"
-         and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
-         and str(a.get("folder_info", {}).get("request_code") or "") == new_request_code.strip()),
-        None,
-    )
+    pending = next((a for a in _alerts if a.get("status") == "cross_role_duplicate"
+                    and str(a.get("cv_fields", {}).get("email") or "").lower() == email.strip().lower()
+                    and str(a.get("request_code") or "") == new_request_code.strip()), None)
     if not pending:
         return f"No pending cross-role alert for '{email}' / '{new_request_code}'."
     name = pending["cv_fields"].get("candidate_name") or "Unknown"
     if action.lower() == "skip":
-        _alerts.remove(pending)
+        _remove_alert(pending)
         return f"Skipped adding {name} for {new_request_code}. No changes made."
     if action.lower() == "add":
-        row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_info"], pending["file_path"])
-        try:
-            new_row = _add_row(row_data)
-        except Exception as e:
-            return f"Failed to add row: {e}"
-        _alerts.remove(pending)
-        return f"Added {name} for {new_request_code} at row {new_row}."
+        row_data = _build_row_data(_CVFields(**pending["cv_fields"]), pending["folder_name"],
+                                    pending["subfolder"], pending.get("referrer"), pending["filename"])
+        new_row = _add_personal_row(row_data)
+        _remove_alert(pending)
+        return f"Added {name} for {new_request_code} at row (No. {new_row['No']})."
     return "Invalid action. Use 'add' or 'skip'."
 
 
@@ -993,29 +711,20 @@ def resolve_sync_conflict(email: str, request_code: str, action: str) -> str:
         request_code: The job request code.
         action: 'skip' to leave the team DB unchanged, or 'add_new' to insert this row as a new entry.
     """
-    pending = next(
-        (a for a in _alerts
-         if a.get("status") in ("sync_conflict_pending", "sync_cross_ta_pending")
-         and str(a.get("email") or "").lower() == email.strip().lower()
-         and str(a.get("request_code") or "") == request_code.strip()),
-        None,
-    )
+    pending = next((a for a in _alerts if a.get("status") in ("sync_conflict_pending", "sync_cross_ta_pending")
+                    and str(a.get("email") or "").lower() == email.strip().lower()
+                    and str(a.get("request_code") or "") == request_code.strip()), None)
     if not pending:
         return f"No pending sync conflict for '{email}' / '{request_code}'."
     candidate_name = pending.get("candidate_name") or "Unknown"
     if action.lower() == "skip":
-        _alerts.remove(pending)
+        _remove_alert(pending)
         return f"Skipped syncing {candidate_name} ({email}) for {request_code}. Team DB unchanged."
     if action.lower() == "add_new":
         row_data = {k: v for k, v in pending["row_data"].items() if v is not None}
-        try:
-            new_row = _add_team_row(row_data)
-        except PermissionError:
-            return "Team database is currently open by another user. Please close it and try again."
-        except Exception as e:
-            return f"Failed to add row: {e}"
-        _alerts.remove(pending)
-        return f"Added {candidate_name} as new row {new_row} in team database for {request_code}."
+        new_row = _add_team_row(row_data)
+        _remove_alert(pending)
+        return f"Added {candidate_name} as new row (No. {new_row['No']}) in team database."
     return "Invalid action. Use 'skip' or 'add_new'."
 
 
@@ -1030,7 +739,7 @@ def run_sync_now() -> str:
              f"  Added:     {result['added']}",
              f"  Updated:   {result['updated']}",
              f"  Skipped:   {result['skipped']} (no changes)",
-             f"  Conflicts: {result['conflicts']} (written to '{CONFLICT_SHEET}' sheet in team DB)"]
+             f"  Conflicts: {result['conflicts']}"]
     if result["errors"]:
         lines.append(f"  Errors: {'; '.join(result['errors'])}")
     return "\n".join(lines)
@@ -1039,11 +748,10 @@ def run_sync_now() -> str:
 @tool
 def get_sync_status() -> str:
     """Show when the last sync ran and when the next one is scheduled for this TA."""
-    state = _load_sync_state()
-    last = (state.get("last_sync") or "Never")[:19]
+    last = (_sync_state.get("last_sync") or "Never")[:19]
     scheduled = _get_scheduled_time()
     sched_str = f"{scheduled[0]:02d}:{scheduled[1]:02d} daily" if scheduled else f"Not scheduled (TA '{TA_INCHARGE}' not in schedule)"
-    rows_tracked = len(state.get("rows", {}))
+    rows_tracked = len(_sync_state.get("rows", {}))
     return (f"TA Incharge:    {TA_INCHARGE}\n"
             f"Scheduled sync: {sched_str}\n"
             f"Last sync:      {last}\n"
@@ -1056,22 +764,43 @@ def get_sync_status() -> str:
 SYSTEM_PROMPT = """You are a Recruitment Agent.
 
 Skills:
-1. **create_job_folder** — create job folder with standard sub-folders (LinkedIn, VNG Careers, Referral, TA Search, Others)
-2. **process_cv_file** — process a CV file and add candidate to personal database
-3. **get_alerts** — check pending alerts: CV results, duplicates, sync conflicts, errors
-4. **clear_alerts** — dismiss resolved alerts
-5. **resolve_duplicate** — same email + same job code: keep existing row or overwrite
-6. **resolve_cross_role** — same email + different job code (your pipeline): add new row or skip
-7. **resolve_sync_conflict** — sync blocked by different TA in team DB: add new row or skip
-8. **run_sync_now** — manually trigger personal → team database sync immediately
-9. **get_sync_status** — show last sync time and next scheduled sync
+1. create_job_folder     - create a job folder record with standard sub-folders (LinkedIn, VNG Careers, Referral, TA Search, Others)
+2. get_alerts             - check pending alerts: CV results, duplicates, sync conflicts, errors
+3. clear_alerts           - dismiss resolved alerts
+4. resolve_duplicate      - same email (same or different job code): keep, overwrite (same job code only), or add as new
+5. resolve_cross_role     - same email + different job code: add or skip (legacy path, prefer resolve_duplicate)
+6. resolve_sync_conflict  - sync blocked by a different TA already having this candidate: add new row or skip
+7. run_sync_now           - manually trigger personal -> team database sync
+8. get_sync_status        - show last sync time and next scheduled sync
+
+CVs are uploaded and parsed through the Upload CV wizard in the chat UI — you do not have a
+tool to process a CV file yourself; only react to the alerts that wizard produces.
 
 Rules:
-- Never fill Stage, Status, Note, Reason for failure, or salary fields — recruiter only (exception: auto-write "Email missing - please fill in manually" in Note when email cannot be extracted)
+- Never fill Stage, Status, Note, Reason for failure, or salary fields — recruiter only
+  (exception: auto-write "Email missing - please fill in manually" in Note when email is missing)
 - Never delete existing rows; only add or (on explicit recruiter instruction) overwrite
 - Missing CV fields: leave blank, alert recruiter — do not guess
 - Referrer: blank unless source = Referral
-- Sync: only Excel data, never copy CV files"""
+- Sync: only database rows, never copy CV files
+
+Sync workflow:
+- After run_sync_now() completes, ALWAYS call get_alerts() immediately as your next step.
+- Report in plain language: "Sync complete: X added, Y updated, Z unchanged, N conflicts need attention."
+- If conflicts exist, show them immediately — never ask "would you like to check alerts?".
+- get_alerts() already formats each conflict in full, including the CONFLICT_DATA line with
+  the real email/request_code/type values filled in. Copy every conflict block from
+  get_alerts() into your reply EXACTLY as returned, character for character — including the
+  CONFLICT_DATA line. Never retype, reformat, summarize, or recompute the CONFLICT_DATA line
+  yourself; never write a placeholder like "[request_code]" — always use get_alerts()'s own
+  text verbatim.
+- After listing all conflicts, say: "Use the buttons above to resolve each conflict."
+
+Proactive suggestions (add 1-2 sentences after completing each task):
+- After create_job_folder -> suggest uploading CVs to the new folder.
+- After run_sync_now -> suggest checking alerts if any conflicts were flagged.
+- After resolving a conflict -> suggest viewing the Database page to confirm the change.
+Keep suggestions brief (1 sentence each), natural, and only when they add value. Do not repeat the same suggestion twice in a row."""
 
 
 class State(TypedDict):
@@ -1080,7 +809,7 @@ class State(TypedDict):
 
 tools = [
     create_job_folder,
-    process_cv_file, get_alerts, clear_alerts,
+    get_alerts, clear_alerts,
     resolve_duplicate, resolve_cross_role, resolve_sync_conflict,
     run_sync_now, get_sync_status,
 ]
@@ -1102,15 +831,236 @@ graph = graph_builder.compile()
 
 
 # ---------------------------------------------------------------------------
+# Ensure CONFLICT_DATA lines survive even if the LLM paraphrases its reply
+# ---------------------------------------------------------------------------
+_CONFLICT_DATA_LINE_RE = re.compile(r'CONFLICT_DATA:\{[^\n\r]+\}')
+
+
+def _ensure_conflict_markers(messages: list, final_text: str) -> str:
+    extra_lines: list[str] = []
+    for m in messages:
+        if not isinstance(m, ToolMessage):
+            continue
+        content = m.content if isinstance(m.content, str) else str(m.content)
+        for match in _CONFLICT_DATA_LINE_RE.finditer(content):
+            line = match.group(0)
+            if line not in final_text and line not in extra_lines:
+                extra_lines.append(line)
+    if not extra_lines:
+        return final_text
+    return final_text.rstrip() + "\n" + "\n".join(extra_lines)
+
+
+# ---------------------------------------------------------------------------
+# HTTP handlers — CV upload wizard (Skill 2)
+# ---------------------------------------------------------------------------
+_staged_files: dict[str, dict] = {}
+_staged_lock = threading.Lock()
+_parse_jobs: dict[str, dict] = {}
+
+
+async def handle_save_cv(request: Request) -> JSONResponse:
+    """Phase 1 — stage an uploaded CV in memory immediately; no AI parsing yet."""
+    try:
+        form = await request.form()
+    except Exception as exc:
+        return JSONResponse({"status": "error", "response": f"Could not parse form: {exc}"}, status_code=400)
+
+    folder    = str(form.get("folder")    or "").strip()
+    subfolder = str(form.get("subfolder") or "").strip()
+    referrer  = str(form.get("referrer")  or "").strip() or None
+    upload    = form.get("file")
+
+    if not folder or not subfolder or upload is None:
+        return JSONResponse(
+            {"status": "error", "response": "Fields 'folder', 'subfolder', and 'file' are required."},
+            status_code=400,
+        )
+    if subfolder not in JOB_SUB_FOLDERS:
+        return JSONResponse(
+            {"status": "error", "response": f"'subfolder' must be one of: {', '.join(JOB_SUB_FOLDERS)}"},
+            status_code=400,
+        )
+
+    raw_name = Path(upload.filename).name
+    ext = Path(raw_name).suffix.lower()
+    if ext not in _ALLOWED_EXT:
+        return JSONResponse(
+            {"status": "error", "response": f"File type '{ext}' not supported. Use PDF or DOCX."},
+            status_code=400,
+        )
+
+    contents = await upload.read()
+    file_id = uuid.uuid4().hex[:16]
+    with _staged_lock:
+        _staged_files[file_id] = {
+            "filename": raw_name, "data": contents,
+            "folder": folder, "subfolder": subfolder, "referrer": referrer,
+        }
+
+    if not any(f["name"] == folder for f in job_folders):
+        job_folders.append({"name": folder, "sub_folders": JOB_SUB_FOLDERS,
+                             "created_at": datetime.now().isoformat()})
+        _persist_folders()
+
+    return JSONResponse({
+        "status":    "saved",
+        "name":      raw_name,
+        "saved_to":  file_id,
+        "folder":    folder,
+        "subfolder": subfolder,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+def _parse_one(file_id: str, timeout: float = 120.0) -> dict:
+    staged = _staged_files.get(file_id)
+    if not staged:
+        return {"status": "error", "messages": ["File no longer available (already processed or expired)."]}
+
+    result: dict = {}
+    exc_holder: list = []
+
+    def _run() -> None:
+        try:
+            result.update(_process_cv(staged["filename"], staged["data"], staged["folder"],
+                                       staged["subfolder"], staged.get("referrer")))
+        except Exception as e:  # noqa: BLE001
+            exc_holder.append(e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        return {"status": "timeout", "messages": [f"Parsing timed out after {int(timeout)}s."]}
+    if exc_holder:
+        raise exc_holder[0]
+    return result or {"status": "error", "messages": ["No result returned."]}
+
+
+def _parse_worker(job_id: str, file_ids: list[str]) -> None:
+    job = _parse_jobs[job_id]
+
+    def _run_one(file_id: str) -> dict:
+        staged = _staged_files.get(file_id)
+        name = staged["filename"] if staged else file_id
+        job["current"] = name
+        try:
+            result = _parse_one(file_id)
+            return {"name": name, **result, "path": file_id}
+        except Exception as e:  # noqa: BLE001
+            return {"name": name, "status": "error", "messages": [str(e)], "path": file_id}
+        finally:
+            with _staged_lock:
+                _staged_files.pop(file_id, None)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(_run_one, fid): fid for fid in file_ids}
+        for fut in as_completed(futures):
+            result = fut.result()
+            status = result.get("status", "error")
+            if status in ("success", "duplicate", "cross_role_duplicate"):
+                job["done"] += 1
+            else:
+                job["failed"] += 1
+            job["results"].append(result)
+            job["progress"] += 1
+
+    job["status"] = "complete" if job["failed"] == 0 else ("partial" if job["done"] > 0 else "failed")
+    job["finished_at"] = datetime.now().isoformat()
+
+
+async def handle_start_parse(request: Request) -> JSONResponse:
+    """Phase 2 — kick off background parsing for previously staged file ids."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"status": "error", "response": "Request body must be valid JSON."}, status_code=400)
+
+    files: list[str] = body.get("files", [])
+    if not files:
+        return JSONResponse({"status": "error", "response": "No files to parse."}, status_code=400)
+
+    job_id = uuid.uuid4().hex[:12]
+    _parse_jobs[job_id] = {
+        "status":      "running",
+        "total":       len(files),
+        "progress":    0,
+        "done":        0,
+        "failed":      0,
+        "current":     "",
+        "results":     [],
+        "started_at":  datetime.now().isoformat(),
+        "finished_at": None,
+    }
+
+    threading.Thread(target=_parse_worker, args=(job_id, files), daemon=True).start()
+    return JSONResponse({"job_id": job_id, "total": len(files), "status": "running"})
+
+
+async def handle_parse_status(request: Request) -> JSONResponse:
+    job_id = request.path_params.get("job_id", "")
+    job = _parse_jobs.get(job_id)
+    if not job:
+        return JSONResponse({"status": "error", "response": f"Unknown job_id: {job_id!r}"}, status_code=404)
+    return JSONResponse({"job_id": job_id, **job})
+
+
+async def handle_list_folders(request: Request) -> JSONResponse:
+    return JSONResponse({"folders": [f["name"] for f in job_folders]})
+
+
+# ---------------------------------------------------------------------------
+# HTTP handlers — Database portal
+# ---------------------------------------------------------------------------
+async def handle_database(request: Request) -> JSONResponse:
+    return JSONResponse({
+        "personal": [_public_row(r) for r in personal_db],
+        "team":     [_public_row(r) for r in team_db],
+    })
+
+
+async def handle_download_excel(request: Request) -> Response:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Database"
+    for col, h in enumerate(DB_COLUMNS, 1):
+        ws.cell(row=1, column=col, value=h)
+    # Row 2 left blank (annotation row); data starts row 3
+    for r_idx, row in enumerate(personal_db, start=3):
+        for col, h in enumerate(DB_COLUMNS, 1):
+            ws.cell(row=r_idx, column=col, value=row.get(h))
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"personal_db_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+app.router.routes.extend([
+    Route("/save-cv",               handle_save_cv,       methods=["POST"]),
+    Route("/start-parse",           handle_start_parse,   methods=["POST"]),
+    Route("/parse-status/{job_id}", handle_parse_status,  methods=["GET"]),
+    Route("/list-folders",          handle_list_folders,  methods=["GET"]),
+    Route("/database",              handle_database,       methods=["GET"]),
+    Route("/download-excel",        handle_download_excel, methods=["GET"]),
+])
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint & health check
 # ---------------------------------------------------------------------------
 @app.entrypoint
 def handler(payload: dict, context: RequestContext) -> dict:
     message = payload.get("message", "Hello")
     result = graph.invoke({"messages": [("user", message)]})
+    final_text = _ensure_conflict_markers(result["messages"], result["messages"][-1].content)
     return {
         "status": "success",
-        "response": result["messages"][-1].content,
+        "response": final_text,
         "timestamp": datetime.now().isoformat(),
     }
 

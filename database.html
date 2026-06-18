@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recruitment Database</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .app {
+      max-width: 1320px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 0 48px rgba(0,0,0,.13);
+      overflow: hidden;
+    }
+
+    /* ─── Header ─────────────────────────────────────────────────────── */
+    .db-header {
+      background: linear-gradient(135deg, #0033C9, #0055FF);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .header-avatar {
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      overflow: hidden;
+      background: rgba(255,255,255,.2);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .header-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+    .header-info h1 { color: #fff; font-size: 15px; font-weight: 600; }
+    .header-info .status {
+      color: rgba(255,255,255,.8); font-size: 12px;
+      display: flex; align-items: center; gap: 5px; margin-top: 2px;
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #00CF6A; flex-shrink: 0; }
+    .status-dot.error { background: #f87171; }
+
+    .page-nav { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
+    .page-nav a, .page-nav span {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 14px; border-radius: 9px;
+      font-size: 13px; font-weight: 600; text-decoration: none;
+      color: rgba(255,255,255,.85);
+      transition: background .15s;
+    }
+    .page-nav a:hover { background: rgba(255,255,255,.15); }
+    .page-nav .active { background: rgba(255,255,255,.22); color: #fff; }
+
+    /* ─── DB tabs ────────────────────────────────────────────────────── */
+    .db-tabs {
+      display: flex; gap: 8px;
+      padding: 14px 20px 0;
+      background: #fafafa;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .db-tab {
+      padding: 9px 16px;
+      border: none; border-radius: 9px 9px 0 0;
+      background: transparent; color: #6b7280;
+      font-family: inherit; font-size: 13.5px; font-weight: 600;
+      cursor: pointer; transition: background .15s, color .15s;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .db-tab:hover { color: #0033C9; }
+    .db-tab.active { color: #0033C9; border-bottom: 2px solid #0033C9; background: #fff; }
+
+    /* ─── Toolbar ────────────────────────────────────────────────────── */
+    .db-toolbar {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      padding: 14px 20px;
+      background: #fafafa;
+      border-bottom: 1px solid #e5e7eb;
+      align-items: center;
+    }
+    .db-toolbar input, .db-toolbar select {
+      padding: 8px 11px;
+      border: 1.5px solid #e5e7eb; border-radius: 8px;
+      font-family: inherit; font-size: 13px; color: #111827;
+      outline: none; background: #fff;
+      transition: border-color .15s;
+    }
+    .db-toolbar input:focus, .db-toolbar select:focus { border-color: #0033C9; }
+    #search-input { flex: 1 1 200px; min-width: 160px; }
+    #reqcode-input { flex: 0 1 140px; min-width: 120px; }
+    .db-toolbar select { flex: 0 1 150px; min-width: 110px; }
+
+    .db-btn {
+      padding: 8px 14px; border: none; border-radius: 8px;
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: opacity .15s; white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .db-btn:hover { opacity: .88; }
+    .btn-refresh { background: #eef1ff; color: #0033C9; }
+    .btn-download { background: #00CF6A; color: #fff; }
+    .hidden { display: none !important; }
+
+    /* ─── Row count ──────────────────────────────────────────────────── */
+    .db-meta {
+      padding: 10px 20px;
+      font-size: 12.5px; color: #6b7280;
+    }
+
+    /* ─── Table ──────────────────────────────────────────────────────── */
+    .db-table-wrap {
+      overflow-x: auto;
+      max-height: 65vh;
+      overflow-y: auto;
+      border-top: 1px solid #f3f4f6;
+    }
+    table.db-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    table.db-table th, table.db-table td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #f3f4f6;
+      text-align: left;
+    }
+    table.db-table thead th {
+      position: sticky; top: 0;
+      background: #f8fafc;
+      color: #374151; font-weight: 700;
+      font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em;
+      border-bottom: 1.5px solid #e5e7eb;
+      z-index: 2;
+    }
+    table.db-table tbody tr:hover { background: #fafbff; }
+    table.db-table th:first-child, table.db-table td:first-child {
+      position: sticky; left: 0;
+      background: #fff;
+      z-index: 1;
+      box-shadow: 2px 0 4px -2px rgba(0,0,0,.06);
+    }
+    table.db-table thead th:first-child { background: #f8fafc; z-index: 3; }
+    td.manual-col { color: #9ca3af; font-style: italic; }
+
+    .empty-state {
+      padding: 48px 20px;
+      text-align: center;
+      color: #6b7280;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <header class="db-header">
+    <div class="header-avatar"><img src="assets/mascot.png" alt="Recruitment Agent" /></div>
+    <div class="header-info">
+      <h1>Recruitment Database</h1>
+      <div class="status"><span class="status-dot" id="status-dot"></span><span id="status-text">Connecting…</span></div>
+    </div>
+    <nav class="page-nav">
+      <a href="index.html">💬 Chat</a>
+      <span class="active">📊 Database</span>
+    </nav>
+  </header>
+
+  <div class="db-tabs">
+    <button class="db-tab active" data-tab="personal" id="tab-personal">📋 Personal DB</button>
+    <button class="db-tab" data-tab="team" id="tab-team">👥 Team DB</button>
+  </div>
+
+  <div class="db-toolbar">
+    <input type="text" id="search-input" placeholder="🔎 Search name or email…" />
+    <input type="text" id="reqcode-input" placeholder="Request code…" />
+    <select id="filter-team"><option value="">All Teams</option></select>
+    <select id="filter-ta"><option value="">All TA Incharge</option></select>
+    <select id="filter-stage"><option value="">All Stages</option></select>
+    <select id="filter-status"><option value="">All Statuses</option></select>
+    <button class="db-btn btn-refresh" id="refresh-btn">🔄 Refresh</button>
+    <button class="db-btn btn-download" id="download-btn">⬇️ Download Excel</button>
+  </div>
+
+  <div class="db-meta">Showing <strong id="row-count">0</strong> candidates</div>
+
+  <div class="db-table-wrap">
+    <table class="db-table hidden" id="db-table">
+      <thead><tr id="db-thead-row"></tr></thead>
+      <tbody id="db-tbody"></tbody>
+    </table>
+    <div class="empty-state hidden" id="empty-state"></div>
+  </div>
+</div>
+
+<script>
+  const AGENT_ENDPOINT = "https://endpoint-8c052130-5efa-49bd-92b9-a38678d2db75.agentbase-runtime.aiplatform.vngcloud.vn";
+
+  const DB_COLUMNS = [
+    "No", "Request code", "Candidate name", "Processed Team", "Processed Position",
+    "Entry date", "Source", "Referrer", "Latest company", "Latest position",
+    "Email", "Phone", "Stage", "Status", "Note", "Reason for failure/withdrawal",
+    "Last drawn salary", "Expected salary (Monthly Gross)", "TA Incharge", "Profile",
+  ];
+  const MANUAL_COLUMNS = new Set([
+    "Stage", "Status", "Note", "Reason for failure/withdrawal",
+    "Last drawn salary", "Expected salary (Monthly Gross)",
+  ]);
+
+  let personalRows = [];
+  let teamRows = [];
+  let activeTab = "personal";
+
+  const els = {
+    search:    document.getElementById("search-input"),
+    reqcode:   document.getElementById("reqcode-input"),
+    team:      document.getElementById("filter-team"),
+    ta:        document.getElementById("filter-ta"),
+    stage:     document.getElementById("filter-stage"),
+    status:    document.getElementById("filter-status"),
+    refresh:   document.getElementById("refresh-btn"),
+    download:  document.getElementById("download-btn"),
+    rowCount:  document.getElementById("row-count"),
+    table:     document.getElementById("db-table"),
+    theadRow:  document.getElementById("db-thead-row"),
+    tbody:     document.getElementById("db-tbody"),
+    empty:     document.getElementById("empty-state"),
+    statusDot: document.getElementById("status-dot"),
+    statusTxt: document.getElementById("status-text"),
+  };
+
+  // Build header row once
+  DB_COLUMNS.forEach(col => {
+    const th = document.createElement("th");
+    th.textContent = col;
+    els.theadRow.appendChild(th);
+  });
+
+  function getActiveRows() { return activeTab === "personal" ? personalRows : teamRows; }
+
+  function distinct(rows, col) {
+    return [...new Set(
+      rows.map(r => r[col]).filter(v => v !== null && v !== undefined && String(v).trim() !== "")
+    )].sort();
+  }
+
+  function buildSelectOptions(selectEl, values) {
+    const current = selectEl.value;
+    while (selectEl.options.length > 1) selectEl.remove(1);
+    values.forEach(v => {
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = v;
+      selectEl.appendChild(opt);
+    });
+    if (values.includes(current)) selectEl.value = current;
+    else selectEl.value = "";
+  }
+
+  function populateFilterOptions() {
+    const rows = getActiveRows();
+    buildSelectOptions(els.team,   distinct(rows, "Processed Team"));
+    buildSelectOptions(els.ta,     distinct(rows, "TA Incharge"));
+    buildSelectOptions(els.stage,  distinct(rows, "Stage"));
+    buildSelectOptions(els.status, distinct(rows, "Status"));
+  }
+
+  function renderTable(rows, totalCount) {
+    els.tbody.innerHTML = "";
+    rows.forEach(row => {
+      const tr = document.createElement("tr");
+      DB_COLUMNS.forEach(col => {
+        const td = document.createElement("td");
+        if (MANUAL_COLUMNS.has(col)) td.className = "manual-col";
+        const val = row[col];
+        td.textContent = (val === null || val === undefined) ? "" : String(val);
+        tr.appendChild(td);
+      });
+      els.tbody.appendChild(tr);
+    });
+
+    els.rowCount.textContent = rows.length;
+    const noData = totalCount === 0;
+    els.table.classList.toggle("hidden", rows.length === 0);
+    els.empty.classList.toggle("hidden", rows.length > 0);
+    els.empty.textContent = noData
+      ? "No candidates yet. Process CVs in Chat to add data."
+      : "No candidates match these filters.";
+  }
+
+  function applyFiltersAndRender() {
+    const rows = getActiveRows();
+    const search  = els.search.value.trim().toLowerCase();
+    const reqCode = els.reqcode.value.trim().toLowerCase();
+    const team    = els.team.value;
+    const ta      = els.ta.value;
+    const stage   = els.stage.value;
+    const status  = els.status.value;
+
+    const filtered = rows.filter(r => {
+      if (search) {
+        const name  = String(r["Candidate name"] || "").toLowerCase();
+        const email = String(r["Email"] || "").toLowerCase();
+        if (!name.includes(search) && !email.includes(search)) return false;
+      }
+      if (reqCode && !String(r["Request code"] || "").toLowerCase().includes(reqCode)) return false;
+      if (team   && String(r["Processed Team"] || "") !== team)   return false;
+      if (ta     && String(r["TA Incharge"]    || "") !== ta)     return false;
+      if (stage  && String(r["Stage"]          || "") !== stage)  return false;
+      if (status && String(r["Status"]         || "") !== status) return false;
+      return true;
+    });
+
+    renderTable(filtered, rows.length);
+  }
+
+  function setActiveTab(tab) {
+    activeTab = tab;
+    document.getElementById("tab-personal").classList.toggle("active", tab === "personal");
+    document.getElementById("tab-team").classList.toggle("active", tab === "team");
+    els.download.classList.toggle("hidden", tab !== "personal");
+    populateFilterOptions();
+    applyFiltersAndRender();
+  }
+
+  function setStatus(ok, detail) {
+    els.statusDot.classList.toggle("error", !ok);
+    els.statusTxt.textContent = ok ? "Online" : `Offline${detail ? " — " + detail : ""}`;
+  }
+
+  async function loadDatabase() {
+    try {
+      const res = await fetch(`${AGENT_ENDPOINT}/database`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      personalRows = data.personal || [];
+      teamRows = data.team || [];
+      setStatus(true);
+    } catch (e) {
+      setStatus(false, e.message);
+    }
+    populateFilterOptions();
+    applyFiltersAndRender();
+  }
+
+  document.getElementById("tab-personal").addEventListener("click", () => setActiveTab("personal"));
+  document.getElementById("tab-team").addEventListener("click", () => setActiveTab("team"));
+  [els.search, els.reqcode].forEach(el => el.addEventListener("input", applyFiltersAndRender));
+  [els.team, els.ta, els.stage, els.status].forEach(el => el.addEventListener("change", applyFiltersAndRender));
+  els.refresh.addEventListener("click", loadDatabase);
+  els.download.addEventListener("click", () => window.open(`${AGENT_ENDPOINT}/download-excel`, "_blank"));
+
+  loadDatabase();
+  setInterval(loadDatabase, 30000);
+</script>
+</body>
+</html>

@@ -63,85 +63,17 @@
     }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #00CF6A; }
 
-    /* ─── Gear button (header top-right) ────────────────────────────── */
-    .gear-wrap { position: relative; margin-left: auto; flex-shrink: 0; }
-    .gear-btn {
-      width: 36px; height: 36px; border-radius: 50%; border: none;
-      background: rgba(255,255,255,.18);
-      color: #fff; font-size: 17px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
+    /* ─── Page nav (header top-right) ───────────────────────────────── */
+    .page-nav { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
+    .page-nav a, .page-nav span {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 14px; border-radius: 9px;
+      font-size: 13px; font-weight: 600; text-decoration: none;
+      color: rgba(255,255,255,.85);
       transition: background .15s;
-      position: relative;
     }
-    .gear-btn:hover { background: rgba(255,255,255,.28); }
-    .gear-badge {
-      position: absolute; top: 1px; right: 1px;
-      width: 9px; height: 9px; border-radius: 50%;
-      background: #fbbf24;
-      border: 2px solid #0055FF;
-      animation: blink 1.4s infinite;
-    }
-    .gear-badge.hidden { display: none; }
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
-
-    /* ─── Settings panel (fixed, drops from gear icon) ───────────────── */
-    .settings-panel {
-      position: fixed;
-      z-index: 300;
-      width: 320px;
-      background: #fff;
-      border-radius: 14px;
-      box-shadow: 0 12px 40px rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.06);
-      padding: 18px;
-      animation: spIn .15s ease;
-    }
-    .settings-panel.hidden { display: none; }
-    @keyframes spIn {
-      from { opacity: 0; transform: translateY(-6px) scale(.97); }
-      to   { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    .sp-title {
-      font-size: 13px; font-weight: 700; color: #111827;
-      margin-bottom: 12px; display: flex; align-items: center; gap: 6px;
-    }
-    .sp-field-label {
-      font-size: 11.5px; font-weight: 600; color: #6b7280;
-      text-transform: uppercase; letter-spacing: .05em;
-      margin-bottom: 6px;
-    }
-    .sp-row { display: flex; gap: 8px; }
-    .sp-row input {
-      flex: 1;
-      padding: 8px 11px;
-      border: 1.5px solid #e5e7eb; border-radius: 8px;
-      font-family: monospace; font-size: 13px; color: #111827;
-      outline: none; transition: border-color .15s; background: #f9fafb;
-    }
-    .sp-row input:focus { border-color: #0033C9; background: #fff; }
-    .sp-row input::placeholder { color: #9ca3af; }
-    .sp-save-btn {
-      padding: 8px 16px; border: none; border-radius: 8px;
-      background: linear-gradient(135deg, #0033C9, #0055FF);
-      color: #fff; font-family: inherit; font-size: 13px; font-weight: 600;
-      cursor: pointer; flex-shrink: 0; transition: opacity .15s;
-    }
-    .sp-save-btn:hover { opacity: .88; }
-    .sp-hint {
-      margin-top: 10px; font-size: 11.5px; color: #6b7280; line-height: 1.6;
-    }
-    .sp-hint code {
-      background: #f3f4f6; border-radius: 4px; padding: 1px 5px;
-      font-family: monospace; font-size: 11px; color: #374151;
-    }
-    .sp-status {
-      margin-top: 10px; padding: 7px 10px;
-      border-radius: 7px; font-size: 12px; display: flex; align-items: center; gap: 7px;
-    }
-    .sp-status.ok   { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
-    .sp-status.warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
-    .sp-status-dot  { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-    .sp-status.ok   .sp-status-dot { background: #00CF6A; }
-    .sp-status.warn .sp-status-dot { background: #f59e0b; }
+    .page-nav a:hover { background: rgba(255,255,255,.15); }
+    .page-nav .active { background: rgba(255,255,255,.22); color: #fff; }
 
     /* ─── Toolbar ────────────────────────────────────────────────────── */
     .toolbar {
@@ -494,29 +426,6 @@
     .fi-name { flex: 1; font-weight: 500; word-break: break-all; }
     .fi-size { color: #6b7280; flex-shrink: 0; }
 
-    /* ─── Path links in agent responses ─────────────────────────────── */
-    .path-link {
-      color: #0033C9; text-decoration: underline; cursor: pointer;
-      word-break: break-all; font-family: monospace; font-size: 13px;
-    }
-    .path-link:hover { color: #0055FF; }
-    .copy-path-btn {
-      border: none; background: none; cursor: pointer; font-size: 11px;
-      padding: 0 3px; color: #9ca3af; transition: color .15s; vertical-align: middle;
-    }
-    .copy-path-btn:hover { color: #0033C9; }
-
-    /* ─── Folder open button ─────────────────────────────────────── */
-    .folder-link-wrap { display: inline-flex; align-items: center; gap: 4px; }
-    .folder-open-btn {
-      display: inline-flex; align-items: center; gap: 5px;
-      border: 1.5px solid #0033C9; border-radius: 7px;
-      background: #F0F4FF; color: #0033C9;
-      font-size: 12px; font-weight: 600; padding: 3px 10px;
-      cursor: pointer; transition: background .15s; font-family: inherit;
-    }
-    .folder-open-btn:hover { background: #dbe4ff; }
-
     /* ─── Conflict resolution buttons ──────────────────────────────── */
     .conflict-btn-area {
       display: flex; gap: 8px; flex-wrap: wrap;
@@ -591,10 +500,10 @@
       <h1>Recruitment Agent</h1>
       <div class="status"><span class="status-dot"></span>Online</div>
     </div>
-    <div class="gear-wrap">
-      <button class="gear-btn" id="gear-btn" onclick="toggleSettings(event)" title="Settings">⚙️</button>
-      <span class="gear-badge" id="gear-badge"></span>
-    </div>
+    <nav class="page-nav">
+      <span class="active">💬 Chat</span>
+      <a href="database.html">📊 Database</a>
+    </nav>
   </header>
 
   <!-- Quick-action toolbar -->
@@ -627,31 +536,6 @@
         <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
       </svg>
     </button>
-  </div>
-</div>
-
-<!-- ═══════════════ SETTINGS PANEL ═══════════════ -->
-<div class="settings-panel hidden" id="settings-panel">
-  <div class="sp-title">⚙️ Settings</div>
-  <div class="sp-field-label">Agent Endpoint URL</div>
-  <div class="sp-row">
-    <input type="url" id="settings-url-input"
-           placeholder="https://xxx.ngrok-free.app"
-           onkeydown="if(event.key==='Enter')saveEndpoint()" />
-    <button class="sp-save-btn" onclick="saveEndpoint()">Save</button>
-  </div>
-  <div class="sp-status warn hidden" id="sp-status">
-    <span class="sp-status-dot"></span>
-    <span id="sp-status-text">Not configured</span>
-  </div>
-  <div class="sp-hint">
-    1. Run <code>python local_server.py</code><br>
-    2. Run <code>ngrok http 8080</code><br>
-    3. Paste the <code>https://xxx.ngrok-free.app</code> URL above and Save
-  </div>
-  <div style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:12px;">
-    <div class="sp-field-label">Chat History</div>
-    <button class="sp-save-btn" style="background:#ef4444;margin-top:6px;" onclick="clearHistory()">Clear History</button>
   </div>
 </div>
 
@@ -792,6 +676,10 @@
           </label>
         </div>
       </div>
+      <div class="field hidden" id="referrer-field">
+        <label>Referrer Name</label>
+        <input type="text" id="referrer-input" placeholder="Who referred this candidate?" />
+      </div>
     </div>
 
     <!-- Step 3 -->
@@ -856,64 +744,11 @@
 
 <!-- ═══════════════ SCRIPT ═══════════════ -->
 <script>
-  /* ─── Endpoint management ───────────────────────────────── */
+  /* ─── Endpoint ───────────────────────────────────────────── */
 
-  let _endpoint = (localStorage.getItem("agent_endpoint") || "").replace(/\/$/, "");
+  const AGENT_ENDPOINT = "https://endpoint-8c052130-5efa-49bd-92b9-a38678d2db75.agentbase-runtime.aiplatform.vngcloud.vn";
 
-  function getBaseUrl() { return _endpoint; }
-
-  function updateSettingsUI() {
-    const badge    = document.getElementById("gear-badge");
-    const status   = document.getElementById("sp-status");
-    const statusTx = document.getElementById("sp-status-text");
-    const urlInput = document.getElementById("settings-url-input");
-    urlInput.value = _endpoint;
-    if (_endpoint) {
-      badge.classList.add("hidden");
-      status.className = "sp-status ok";
-      status.classList.remove("hidden");
-      statusTx.textContent = _endpoint.replace(/^https?:\/\//, "");
-    } else {
-      badge.classList.remove("hidden");
-      status.className = "sp-status warn";
-      status.classList.remove("hidden");
-      statusTx.textContent = "Not configured — paste your ngrok URL above";
-    }
-  }
-
-  function toggleSettings(e) {
-    e.stopPropagation();
-    const panel  = document.getElementById("settings-panel");
-    const gearBtn = document.getElementById("gear-btn");
-    if (!panel.classList.contains("hidden")) {
-      panel.classList.add("hidden");
-      return;
-    }
-    // Position panel below the gear button
-    const rect = gearBtn.getBoundingClientRect();
-    panel.style.top   = (rect.bottom + 8) + "px";
-    panel.style.right  = (window.innerWidth - rect.right) + "px";
-    panel.classList.remove("hidden");
-    document.getElementById("settings-url-input").focus();
-  }
-
-  function saveEndpoint() {
-    const val = document.getElementById("settings-url-input").value.trim().replace(/\/$/, "");
-    _endpoint = val;
-    localStorage.setItem("agent_endpoint", val);
-    updateSettingsUI();
-    document.getElementById("settings-panel").classList.add("hidden");
-  }
-
-  // Close settings panel on outside click
-  document.addEventListener("click", function(e) {
-    const panel   = document.getElementById("settings-panel");
-    const gearBtn = document.getElementById("gear-btn");
-    if (!panel.classList.contains("hidden") &&
-        !panel.contains(e.target) && !gearBtn.contains(e.target)) {
-      panel.classList.add("hidden");
-    }
-  });
+  function getBaseUrl() { return AGENT_ENDPOINT; }
 
   /* ─── Chat helpers ──────────────────────────────────────── */
 
@@ -947,13 +782,6 @@
       const hist = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
       hist.forEach(({ role, content }) => appendMessage(role, content, false));
     } catch (_) {}
-  }
-
-  function clearHistory() {
-    localStorage.removeItem(HISTORY_KEY);
-    messagesEl.innerHTML = "";
-    document.getElementById("settings-panel").classList.add("hidden");
-    appendMessage("agent", "Chat history cleared.", false);
   }
 
   function nowStr() {
@@ -1023,49 +851,7 @@
       try { conflicts.push(JSON.parse(json)); } catch(_) {}
       return "";
     });
-
-    // Handle __FOLDER__ (open-folder button) and __LINK__ (copy button) markers
-    const re = /__FOLDER__([\s\S]*?)__ENDFOLDER__|__LINK__([\s\S]*?)__URL__([\s\S]*?)__ENDLINK__/g;
-    let last = 0, m;
-    while ((m = re.exec(text)) !== null) {
-      if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
-      if (m[1] !== undefined) {
-        // Folder path — render "📁 Open Folder" button
-        const path = m[1];
-        const wrap = document.createElement("span");
-        wrap.className = "folder-link-wrap";
-        const openBtn = document.createElement("button");
-        openBtn.className = "folder-open-btn";
-        openBtn.textContent = "📁 Open Folder";
-        openBtn.title = path;
-        openBtn.onclick = () => fetchJSON(`${getBaseUrl()}/open-folder?path=${encodeURIComponent(path)}`).catch(() => {});
-        const copyBtn = document.createElement("button");
-        copyBtn.textContent = "📋";
-        copyBtn.className = "copy-path-btn";
-        copyBtn.title = "Copy path";
-        copyBtn.onclick = () => navigator.clipboard.writeText(path).catch(() => {});
-        wrap.appendChild(openBtn);
-        wrap.appendChild(copyBtn);
-        container.appendChild(wrap);
-      } else {
-        // Bare Windows path — render link + copy button
-        const linkText = m[2], url = m[3];
-        const wrap = document.createElement("span");
-        const a = document.createElement("a");
-        a.textContent = linkText; a.href = url;
-        a.className = "path-link"; a.title = "Open in Explorer";
-        const copyBtn = document.createElement("button");
-        copyBtn.textContent = "📋";
-        copyBtn.className = "copy-path-btn";
-        copyBtn.title = "Copy path";
-        copyBtn.onclick = ev => { ev.preventDefault(); navigator.clipboard.writeText(linkText).catch(() => {}); };
-        wrap.appendChild(a);
-        wrap.appendChild(copyBtn);
-        container.appendChild(wrap);
-      }
-      last = m.index + m[0].length;
-    }
-    if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
+    container.appendChild(document.createTextNode(text));
     return conflicts;
   }
 
@@ -1086,25 +872,10 @@
     sendBtn.disabled  = state;
   }
 
-  function requireEndpoint() {
-    if (getBaseUrl()) return true;
-    appendMessage("error",
-      "No endpoint configured.\n\n" +
-      "Click the ⚙️ gear icon (top right) and paste your ngrok URL:\n" +
-      "  1. python local_server.py\n" +
-      "  2. ngrok http 8080\n" +
-      "  3. Paste https://xxx.ngrok-free.app in Settings"
-    );
-    return false;
-  }
-
   /* ─── Core send / receive ───────────────────────────────── */
 
   async function fetchJSON(url, opts = {}) {
-    const res = await fetch(url, {
-      ...opts,
-      headers: {"ngrok-skip-browser-warning": "true", ...(opts.headers || {})},
-    });
+    const res = await fetch(url, opts);
     const text = await res.text();
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status} — ${text.slice(0, 120)}`);
@@ -1116,7 +887,6 @@
   }
 
   async function sendToAgent(message, displayMessage) {
-    if (!requireEndpoint()) return;
     appendMessage("user", displayMessage || message);
     setDisabled(true);
     showTyping();
@@ -1131,7 +901,7 @@
     } catch(e) {
       hideTyping();
       appendMessage("error",
-        "Could not reach the agent. Check that local_server.py is running and the ngrok URL is correct.\n(" + e.message + ")"
+        "Could not reach the agent. The AgentBase endpoint may be temporarily unavailable.\n(" + e.message + ")"
       );
     } finally {
       setDisabled(false);
@@ -1258,6 +1028,8 @@
     document.getElementById("path-preview").classList.add("hidden");
     document.getElementById("folder-exists-note").classList.add("hidden");
     document.getElementById("new-folder-note").classList.add("hidden");
+    document.getElementById("referrer-field").classList.add("hidden");
+    document.getElementById("referrer-input").value = "";
     const fl = document.getElementById("file-list");
     fl.innerHTML = ""; fl.classList.add("hidden");
     document.getElementById("cv-back-btn").classList.add("hidden");
@@ -1270,6 +1042,7 @@
     labelEl.classList.add("selected");
     selectedSubfolder = value;
     labelEl.querySelector("input").checked = true;
+    document.getElementById("referrer-field").classList.toggle("hidden", value !== "Referral");
   }
 
   function cvNext() {
@@ -1371,11 +1144,11 @@
   }
 
   async function submitCv() {
-    if (!requireEndpoint()) { closeModal(); return; }
     if (!selectedFiles.length) { alert("Please select at least one CV file."); return; }
 
     const folder    = document.getElementById("cv-folder-input").value.trim();
     const subfolder = selectedSubfolder;
+    const referrer  = document.getElementById("referrer-input").value.trim();
     const count     = selectedFiles.length;
 
     closeModal();
@@ -1394,6 +1167,7 @@
       fd.append("folder",    folder);
       fd.append("subfolder", subfolder);
       fd.append("file",      file);
+      if (referrer) fd.append("referrer", referrer);
 
       try {
         const data = await fetchJSON(`${getBaseUrl()}/save-cv`, {method: "POST", body: fd});
@@ -1406,7 +1180,7 @@
       } catch(e) {
         appendMessage("error",
           `❌ ${file.name}: ${e.message}` +
-          (e.status === 404 ? "\n💡 Restart local_server.py — the running server may be an old version without /save-cv." : "")
+          (e.status === 404 ? "\n💡 The deployed agent may be running an older version without /save-cv — check the AgentBase Runtime deployment." : "")
         );
       }
     }
@@ -1606,7 +1380,6 @@
   }
 
   /* ─── Init ──────────────────────────────────────────────── */
-  updateSettingsUI();
 
   // Pre-request notification permission so the parse-complete popup works
   if ("Notification" in window && Notification.permission === "default") {
@@ -1619,7 +1392,11 @@
     _restoreHistory();
   } else {
     appendMessage("agent",
-      "Hello! I'm your Recruitment Agent. I'm here to help you with job folder creation, CV processing, database syncs, and resolving any conflicts that come up. What would you like to start with today?"
+      "Hello! I'm your Recruitment Agent. Use the buttons below to create a job folder, " +
+      "upload a CV, or sync the database — or just chat with me.\n\n" +
+      "To process a CV: click 📄 Upload CV, pick the job folder and source " +
+      "(LinkedIn / VNG Careers / Referral / TA Search / Others), enter the referrer's name " +
+      "if applicable, then select the PDF or DOCX file. I'll extract the candidate's details automatically."
     );
   }
 

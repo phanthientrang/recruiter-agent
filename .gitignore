@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .env
+.env.*
 .greennode.json
 .agentbase/
 .agentbase-state.json
@@ -13,3 +14,4 @@ build/
 processed_cvs.json
 sync_state.json
 Job/
+data/
