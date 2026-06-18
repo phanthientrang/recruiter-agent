@@ -173,9 +173,60 @@
       color: #6b7280;
       font-size: 14px;
     }
+
+    /* ─── Password gate ──────────────────────────────────────────────── */
+    .password-gate {
+      position: fixed; inset: 0; z-index: 9999;
+      background: #0033C9;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 14px; padding: 20px;
+      transition: opacity .35s ease, visibility .35s ease;
+    }
+    .password-gate.fade-out { opacity: 0; visibility: hidden; pointer-events: none; }
+    .gate-avatar {
+      width: 96px; height: 96px; border-radius: 50%;
+      overflow: hidden; background: rgba(255,255,255,.15);
+    }
+    .gate-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .gate-title {
+      color: #fff; font-size: 18px; font-weight: 700; text-align: center;
+      margin-bottom: 4px;
+    }
+    .gate-input {
+      width: 100%; max-width: 260px;
+      padding: 11px 14px; border-radius: 9px; border: none;
+      font-family: inherit; font-size: 14px; outline: none;
+      text-align: center;
+    }
+    .gate-btn {
+      padding: 10px 24px; border: none; border-radius: 9px;
+      background: #00CF6A; color: #fff;
+      font-family: inherit; font-size: 14px; font-weight: 700;
+      cursor: pointer; transition: opacity .15s;
+    }
+    .gate-btn:hover { opacity: .88; }
+    .gate-error {
+      color: #fecaca; font-size: 13px; min-height: 16px; font-weight: 600;
+    }
+    .gate-input.shake { animation: gateShake .4s; }
+    @keyframes gateShake {
+      0%, 100% { transform: translateX(0); }
+      20%      { transform: translateX(-8px); }
+      40%      { transform: translateX(8px); }
+      60%      { transform: translateX(-6px); }
+      80%      { transform: translateX(6px); }
+    }
   </style>
 </head>
 <body>
+
+<div class="password-gate" id="password-gate">
+  <div class="gate-avatar"><img src="assets/mascot.png" alt="Recruitment Agent" /></div>
+  <div class="gate-title">Recruitment Database — TA Team Only</div>
+  <input type="password" class="gate-input" id="gate-password-input" placeholder="Enter password" autocomplete="off" />
+  <button class="gate-btn" id="gate-enter-btn">Enter</button>
+  <div class="gate-error" id="gate-error"></div>
+</div>
 
 <div class="app">
   <header class="db-header">
@@ -470,9 +521,50 @@
   els.refresh.addEventListener("click", loadDatabase);
   els.download.addEventListener("click", () => window.open(`${AGENT_ENDPOINT}/download-excel`, "_blank"));
 
-  buildHeader();
-  loadDatabase();
-  setInterval(loadDatabase, 30000);
+  /* ─── Password gate ──────────────────────────────────────────────── */
+  const GATE_PASSWORD = "Hichiem";
+  const GATE_SESSION_KEY = "db_gate_unlocked";
+
+  function startApp() {
+    buildHeader();
+    loadDatabase();
+    setInterval(loadDatabase, 30000);
+  }
+
+  function initPasswordGate() {
+    const gate     = document.getElementById("password-gate");
+    const input    = document.getElementById("gate-password-input");
+    const enterBtn = document.getElementById("gate-enter-btn");
+    const error    = document.getElementById("gate-error");
+
+    if (sessionStorage.getItem(GATE_SESSION_KEY) === "true") {
+      gate.classList.add("fade-out");
+      startApp();
+      return;
+    }
+
+    function tryUnlock() {
+      if (input.value === GATE_PASSWORD) {
+        sessionStorage.setItem(GATE_SESSION_KEY, "true");
+        error.textContent = "";
+        gate.classList.add("fade-out");
+        startApp();
+      } else {
+        error.textContent = "Incorrect password";
+        input.classList.remove("shake");
+        void input.offsetWidth; // restart animation
+        input.classList.add("shake");
+        input.value = "";
+        input.focus();
+      }
+    }
+
+    enterBtn.addEventListener("click", tryUnlock);
+    input.addEventListener("keydown", e => { if (e.key === "Enter") tryUnlock(); });
+    input.focus();
+  }
+
+  initPasswordGate();
 </script>
 </body>
 </html>
