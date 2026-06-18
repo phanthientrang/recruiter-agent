@@ -527,7 +527,7 @@ app = GreenNodeAgentBaseApp(
         Middleware(
             CORSMiddleware,
             allow_origins=["*"],
-            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["*"],
         )
     ],
@@ -1020,6 +1020,44 @@ async def handle_database(request: Request) -> JSONResponse:
     })
 
 
+_PERSONAL_EDITABLE_FIELDS = (
+    "Stage", "Status", "Note", "Reason for failure/withdrawal",
+    "Last drawn salary", "Expected salary (Monthly Gross)",
+)
+
+
+def _find_personal_row_by_email(email: str) -> dict | None:
+    email_l = email.strip().lower()
+    return next((r for r in personal_db if str(r.get("Email") or "").strip().lower() == email_l), None)
+
+
+async def handle_update_personal_row(request: Request) -> JSONResponse:
+    email = request.path_params.get("email", "")
+    row = _find_personal_row_by_email(email)
+    if not row:
+        return JSONResponse({"status": "error", "response": f"No personal DB row found for email '{email}'."}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"status": "error", "response": "Request body must be valid JSON."}, status_code=400)
+    for field in _PERSONAL_EDITABLE_FIELDS:
+        if field in body:
+            row[field] = body[field]
+    _persist_personal()
+    return JSONResponse({"status": "ok", "row": _public_row(row)})
+
+
+async def handle_delete_personal_row(request: Request) -> JSONResponse:
+    email = request.path_params.get("email", "")
+    email_l = email.strip().lower()
+    idx = next((i for i, r in enumerate(personal_db) if str(r.get("Email") or "").strip().lower() == email_l), None)
+    if idx is None:
+        return JSONResponse({"status": "error", "response": f"No personal DB row found for email '{email}'."}, status_code=404)
+    personal_db.pop(idx)
+    _persist_personal()
+    return JSONResponse({"status": "ok"})
+
+
 async def handle_download_excel(request: Request) -> Response:
     wb = Workbook()
     ws = wb.active
@@ -1046,6 +1084,8 @@ app.router.routes.extend([
     Route("/parse-status/{job_id}", handle_parse_status,  methods=["GET"]),
     Route("/list-folders",          handle_list_folders,  methods=["GET"]),
     Route("/database",              handle_database,       methods=["GET"]),
+    Route("/database/personal/{email}", handle_update_personal_row, methods=["PUT"]),
+    Route("/database/personal/{email}", handle_delete_personal_row, methods=["DELETE"]),
     Route("/download-excel",        handle_download_excel, methods=["GET"]),
 ])
 

@@ -152,6 +152,20 @@
     }
     table.db-table thead th:first-child { background: #f8fafc; z-index: 3; }
     td.manual-col { color: #9ca3af; font-style: italic; }
+    td.edit-cell input {
+      width: 110px; padding: 5px 7px; font-size: 12px;
+      border: 1.5px solid #0033C9; border-radius: 6px; font-family: inherit;
+    }
+    .row-action-btn {
+      border: none; border-radius: 6px; padding: 5px 10px;
+      font-family: inherit; font-size: 11.5px; font-weight: 600;
+      cursor: pointer; margin-right: 4px; transition: opacity .15s;
+    }
+    .row-action-btn:hover { opacity: .85; }
+    .row-action-btn.edit   { background: #eef1ff; color: #0033C9; }
+    .row-action-btn.delete { background: #fef2f2; color: #b91c1c; }
+    .row-action-btn.save   { background: #00CF6A; color: #fff; }
+    .row-action-btn.cancel { background: #f3f4f6; color: #374151; }
 
     .empty-state {
       padding: 48px 20px;
@@ -216,10 +230,16 @@
     "Stage", "Status", "Note", "Reason for failure/withdrawal",
     "Last drawn salary", "Expected salary (Monthly Gross)",
   ]);
+  const EDITABLE_COLUMNS = [
+    "Stage", "Status", "Note", "Reason for failure/withdrawal",
+    "Last drawn salary", "Expected salary (Monthly Gross)",
+  ];
 
   let personalRows = [];
   let teamRows = [];
   let activeTab = "personal";
+  let editingEmail = null;
+  let editBuffer = {};
 
   const els = {
     search:    document.getElementById("search-input"),
@@ -239,12 +259,19 @@
     statusTxt: document.getElementById("status-text"),
   };
 
-  // Build header row once
-  DB_COLUMNS.forEach(col => {
-    const th = document.createElement("th");
-    th.textContent = col;
-    els.theadRow.appendChild(th);
-  });
+  function buildHeader() {
+    els.theadRow.innerHTML = "";
+    DB_COLUMNS.forEach(col => {
+      const th = document.createElement("th");
+      th.textContent = col;
+      els.theadRow.appendChild(th);
+    });
+    if (activeTab === "personal") {
+      const th = document.createElement("th");
+      th.textContent = "Actions";
+      els.theadRow.appendChild(th);
+    }
+  }
 
   function getActiveRows() { return activeTab === "personal" ? personalRows : teamRows; }
 
@@ -279,13 +306,51 @@
     els.tbody.innerHTML = "";
     rows.forEach(row => {
       const tr = document.createElement("tr");
+      const email = row["Email"];
+      const isEditing = activeTab === "personal" && editingEmail !== null && email === editingEmail;
       DB_COLUMNS.forEach(col => {
         const td = document.createElement("td");
-        if (MANUAL_COLUMNS.has(col)) td.className = "manual-col";
-        const val = row[col];
-        td.textContent = (val === null || val === undefined) ? "" : String(val);
+        if (isEditing && EDITABLE_COLUMNS.includes(col)) {
+          td.className = "edit-cell";
+          const input = document.createElement("input");
+          input.type = "text";
+          input.value = editBuffer[col] || "";
+          input.oninput = () => { editBuffer[col] = input.value; };
+          td.appendChild(input);
+        } else {
+          if (MANUAL_COLUMNS.has(col)) td.className = "manual-col";
+          const val = row[col];
+          td.textContent = (val === null || val === undefined) ? "" : String(val);
+        }
         tr.appendChild(td);
       });
+      if (activeTab === "personal") {
+        const td = document.createElement("td");
+        if (isEditing) {
+          const saveBtn = document.createElement("button");
+          saveBtn.className = "row-action-btn save";
+          saveBtn.textContent = "Save";
+          saveBtn.onclick = () => saveEdit(email);
+          const cancelBtn = document.createElement("button");
+          cancelBtn.className = "row-action-btn cancel";
+          cancelBtn.textContent = "Cancel";
+          cancelBtn.onclick = cancelEdit;
+          td.appendChild(saveBtn);
+          td.appendChild(cancelBtn);
+        } else {
+          const editBtn = document.createElement("button");
+          editBtn.className = "row-action-btn edit";
+          editBtn.textContent = "Edit";
+          editBtn.onclick = () => startEdit(row);
+          const delBtn = document.createElement("button");
+          delBtn.className = "row-action-btn delete";
+          delBtn.textContent = "Delete";
+          delBtn.onclick = () => deleteRow(email);
+          td.appendChild(editBtn);
+          td.appendChild(delBtn);
+        }
+        tr.appendChild(td);
+      }
       els.tbody.appendChild(tr);
     });
 
@@ -326,11 +391,56 @@
 
   function setActiveTab(tab) {
     activeTab = tab;
+    editingEmail = null;
+    editBuffer = {};
     document.getElementById("tab-personal").classList.toggle("active", tab === "personal");
     document.getElementById("tab-team").classList.toggle("active", tab === "team");
     els.download.classList.toggle("hidden", tab !== "personal");
+    buildHeader();
     populateFilterOptions();
     applyFiltersAndRender();
+  }
+
+  function startEdit(row) {
+    editingEmail = row["Email"];
+    editBuffer = {};
+    EDITABLE_COLUMNS.forEach(c => { editBuffer[c] = row[c] || ""; });
+    applyFiltersAndRender();
+  }
+
+  function cancelEdit() {
+    editingEmail = null;
+    editBuffer = {};
+    applyFiltersAndRender();
+  }
+
+  async function saveEdit(email) {
+    try {
+      const res = await fetch(`${AGENT_ENDPOINT}/database/personal/${encodeURIComponent(email)}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(editBuffer),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      editingEmail = null;
+      editBuffer = {};
+      await loadDatabase();
+    } catch (e) {
+      alert("Save failed: " + e.message);
+    }
+  }
+
+  async function deleteRow(email) {
+    if (!confirm(`Delete this candidate (${email})? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${AGENT_ENDPOINT}/database/personal/${encodeURIComponent(email)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadDatabase();
+    } catch (e) {
+      alert("Delete failed: " + e.message);
+    }
   }
 
   function setStatus(ok, detail) {
@@ -360,6 +470,7 @@
   els.refresh.addEventListener("click", loadDatabase);
   els.download.addEventListener("click", () => window.open(`${AGENT_ENDPOINT}/download-excel`, "_blank"));
 
+  buildHeader();
   loadDatabase();
   setInterval(loadDatabase, 30000);
 </script>
